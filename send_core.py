@@ -2,7 +2,6 @@ import os
 import requests
 import PyPDF2
 import docx
-import google.generativeai as genai
 
 
 # ===============================
@@ -10,9 +9,6 @@ import google.generativeai as genai
 # ===============================
 
 def extract_text_from_upload(uploaded_file) -> str:
-    """
-    Extract text from PDF / DOCX / TXT uploaded via Streamlit.
-    """
     if uploaded_file is None:
         return ""
 
@@ -34,61 +30,58 @@ def extract_text_from_upload(uploaded_file) -> str:
             return uploaded_file.read().decode("utf-8", errors="ignore").strip()
 
         return ""
-
     except Exception as e:
-        raise RuntimeError(f"File extraction failed: {e}") from e
+        raise RuntimeError(f"File extraction failed: {e}")
 
 
 # ===============================
-# GEMINI SUMMARY (Stable Version)
+# GEMINI SUMMARY (REST v1 – FIXED)
 # ===============================
 
 def summarize_with_gemini(raw_text: str, tone: str = "professional") -> str:
-    """
-    Generate executive summary using Gemini (official SDK).
-    Uses stable 'flash-latest' model to avoid 404 errors.
-    """
 
     if not raw_text.strip():
         return "No content provided."
 
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
-        raise RuntimeError("GEMINI_API_KEY missing in Secrets.")
+        raise RuntimeError("Missing GEMINI_API_KEY")
 
-    # Configure Gemini SDK
-    genai.configure(api_key=api_key)
+    model = "gemini-1.5-flash"   # stable model
 
-    # Use stable alias model (avoids model version errors)
-    model = genai.GenerativeModel("gemini-1.5-flash-latest")
-
-    clipped_text = raw_text[:30000]
+    url = f"https://generativelanguage.googleapis.com/v1/models/{model}:generateContent?key={api_key}"
 
     prompt = f"""
 You are a senior executive assistant.
 Tone: {tone}.
 
-Summarize the content into:
-1) One concise paragraph (2–4 sentences)
-2) Exactly 5 bullet key takeaways
-3) A section titled "Action Items" (max 3)
-
-If the content is mixed-language, respond in English.
+Summarize into:
+1) One concise paragraph
+2) 5 key bullet points
+3) Action Items (max 3)
 
 Content:
-{clipped_text}
+{raw_text[:30000]}
 """
 
-    try:
-        response = model.generate_content(prompt)
+    payload = {
+        "contents": [
+            {
+                "parts": [
+                    {"text": prompt}
+                ]
+            }
+        ]
+    }
 
-        if not hasattr(response, "text") or not response.text:
-            return "Summary generated but returned empty response."
+    response = requests.post(url, json=payload, timeout=60)
 
-        return response.text.strip()
+    if response.status_code != 200:
+        raise RuntimeError(f"Gemini error {response.status_code}: {response.text}")
 
-    except Exception as e:
-        raise RuntimeError(f"Gemini request failed: {e}") from e
+    data = response.json()
+
+    return data["candidates"][0]["content"]["parts"][0]["text"]
 
 
 # ===============================
@@ -96,16 +89,10 @@ Content:
 # ===============================
 
 def send_email_sendgrid(subject: str, body: str) -> None:
+
     api_key = os.environ.get("SENDGRID_API_KEY")
     email_from = os.environ.get("EMAIL_FROM")
     email_to = os.environ.get("EMAIL_TO")
-
-    if not api_key:
-        raise RuntimeError("SENDGRID_API_KEY missing.")
-    if not email_from:
-        raise RuntimeError("EMAIL_FROM missing.")
-    if not email_to:
-        raise RuntimeError("EMAIL_TO missing.")
 
     recipients = [{"email": e.strip()} for e in email_to.split(",") if e.strip()]
 
@@ -117,22 +104,17 @@ def send_email_sendgrid(subject: str, body: str) -> None:
         "reply_to": {"email": email_from},
     }
 
-    try:
-        r = requests.post(
-            "https://api.sendgrid.com/v3/mail/send",
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            json=payload,
-            timeout=30,
-        )
+    r = requests.post(
+        "https://api.sendgrid.com/v3/mail/send",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        json=payload,
+    )
 
-        if r.status_code not in (200, 201, 202):
-            raise RuntimeError(f"SendGrid error {r.status_code}: {r.text}")
-
-    except Exception as e:
-        raise RuntimeError(f"Email sending failed: {e}") from e
+    if r.status_code not in (200, 201, 202):
+        raise RuntimeError(f"SendGrid error {r.status_code}: {r.text}")
 
 
 # ===============================
@@ -140,32 +122,23 @@ def send_email_sendgrid(subject: str, body: str) -> None:
 # ===============================
 
 def send_telegram(message: str) -> None:
+
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
 
-    if not token:
-        raise RuntimeError("TELEGRAM_BOT_TOKEN missing.")
-    if not chat_id:
-        raise RuntimeError("TELEGRAM_CHAT_ID missing.")
-
     url = f"https://api.telegram.org/bot{token}/sendMessage"
 
-    try:
-        r = requests.post(
-            url,
-            json={
-                "chat_id": chat_id,
-                "text": message,
-                "disable_web_page_preview": True,
-            },
-            timeout=30,
-        )
+    r = requests.post(
+        url,
+        json={
+            "chat_id": chat_id,
+            "text": message,
+            "disable_web_page_preview": True,
+        },
+    )
 
-        if r.status_code != 200:
-            raise RuntimeError(f"Telegram error {r.status_code}: {r.text}")
-
-    except Exception as e:
-        raise RuntimeError(f"Telegram sending failed: {e}") from e
+    if r.status_code != 200:
+        raise RuntimeError(f"Telegram error {r.status_code}: {r.text}")
 
 
 # ===============================

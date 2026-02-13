@@ -53,7 +53,7 @@ def summarize_with_gemini(raw_text: str, tone: str = "professional") -> str:
         raise RuntimeError("GEMINI_API_KEY missing in Secrets.")
 
     # Model: fast + cheap, good for summaries
-    model = os.getenv("GEMINI_MODEL", "gemini-1.5-pro").strip()
+    model = os.getenv("GEMINI_MODEL", "gemini-pro").strip()
 
 
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"

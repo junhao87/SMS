@@ -2,7 +2,7 @@ name: Daily AI Summary (Email + Telegram)
 
 on:
   schedule:
-    - cron: "0 1 * * *"  # 01:00 UTC = 09:00 Malaysia time
+    - cron: "0 1 * * *"  # 09:00 Malaysia time
   workflow_dispatch:
 
 jobs:
@@ -20,14 +20,14 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install openai requests
+          pip install requests PyPDF2 python-docx
 
       - name: Run daily summary
         env:
           INPUT_FILE: daily.txt
 
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENAI_MODEL: gpt-4.1-mini
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: gemini-1.5-flash
 
           SENDGRID_API_KEY: ${{ secrets.SENDGRID_API_KEY }}
           EMAIL_FROM: ${{ secrets.EMAIL_FROM }}

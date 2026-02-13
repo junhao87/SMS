@@ -2,6 +2,7 @@ import os
 import requests
 import PyPDF2
 import docx
+import google.generativeai as genai
 
 
 # ===============================
@@ -38,12 +39,13 @@ def extract_text_from_upload(uploaded_file) -> str:
 
 
 # ===============================
-# GEMINI SUMMARY
+# GEMINI SUMMARY (Official SDK)
 # ===============================
 
 def summarize_with_gemini(raw_text: str, tone: str = "professional") -> str:
     """
-    Generate executive summary using Gemini API (Google AI Studio key).
+    Generate executive summary using Gemini via Google official SDK.
+    Fixes v1beta model 404 problems.
     """
     if not raw_text.strip():
         return "No content provided.\n\n- Action: N/A\n- Issue: N/A\n- Next: N/A"
@@ -52,13 +54,17 @@ def summarize_with_gemini(raw_text: str, tone: str = "professional") -> str:
     if not api_key:
         raise RuntimeError("GEMINI_API_KEY missing in Secrets.")
 
-    # Model: fast + cheap, good for summaries
-    model = os.getenv("GEMINI_MODEL", "gemini-pro").strip()
+    # Recommended: keep model configurable via Secrets
+    # Use a safe default. If you still face model issues, try "gemini-1.5-flash" or "gemini-1.5-pro"
+    model_name = os.getenv("GEMINI_MODEL", "gemini-1.5-flash").strip()
 
+    # Configure SDK
+    genai.configure(api_key=api_key)
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+    # Create model
+    model = genai.GenerativeModel(model_name)
 
-    # Keep input bounded to avoid request too large
+    # Keep input bounded (avoid huge requests)
     clipped = raw_text[:40000]
 
     prompt = f"""
@@ -71,28 +77,23 @@ Summarize the content into:
 3) A section titled "Action Items" (max 3)
 
 If the content is mixed-language, keep the summary in English.
+
 Content:
 {clipped}
 """.strip()
 
-    payload = {
-        "contents": [
-            {"parts": [{"text": prompt}]}
-        ]
-    }
-
     try:
-        r = requests.post(url, json=payload, timeout=45)
-        if r.status_code != 200:
-            raise RuntimeError(f"Gemini error {r.status_code}: {r.text}")
+        response = model.generate_content(prompt)
 
-        data = r.json()
+        # response.text is the main plain text output
+        if not getattr(response, "text", None):
+            # fallback if response has no text
+            return "Summary generated but returned empty text."
 
-        # Typical response path
-        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+        return response.text.strip()
 
     except Exception as e:
-        raise RuntimeError(f"Gemini request failed. Model={model}. Details: {e}") from e
+        raise RuntimeError(f"Gemini request failed. Model={model_name}. Details: {e}") from e
 
 
 # ===============================

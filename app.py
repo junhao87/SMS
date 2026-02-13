@@ -1,6 +1,7 @@
 import streamlit as st
 from datetime import datetime
-from send_core import extract_text_from_upload, summarize_with_openai, send_both
+from send_core import extract_text_from_upload, summarize_with_gemini, send_both
+
 
 st.set_page_config(page_title="Daily Summary Bot", layout="centered")
 st.title("Daily Summary Bot")
@@ -16,7 +17,7 @@ if st.button("Generate Summary"):
     raw_text = (pasted.strip() + "\n\n" + file_text.strip()).strip()
 
     try:
-        summary = summarize_with_openai(raw_text, tone=tone)
+        summary = summarize_with_gemini(raw_text, tone=tone)
         st.session_state["summary"] = summary
         st.success("Summary generated.")
     except Exception as e:

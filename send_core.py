@@ -30,12 +30,13 @@ def extract_text_from_upload(uploaded_file) -> str:
             return uploaded_file.read().decode("utf-8", errors="ignore").strip()
 
         return ""
+
     except Exception as e:
         raise RuntimeError(f"File extraction failed: {e}")
 
 
 # ===============================
-# LIST AVAILABLE MODELS
+# LIST AVAILABLE GEMINI MODELS
 # ===============================
 
 def list_gemini_models() -> str:
@@ -66,7 +67,7 @@ def list_gemini_models() -> str:
 
 
 # ===============================
-# GEMINI SUMMARY (AUTO MODEL PICK)
+# GEMINI SUMMARY (CONDENSED ONLY)
 # ===============================
 
 def summarize_with_gemini(raw_text: str, tone: str = "professional") -> str:
@@ -78,27 +79,34 @@ def summarize_with_gemini(raw_text: str, tone: str = "professional") -> str:
     if not api_key:
         raise RuntimeError("Missing GEMINI_API_KEY")
 
-    # Get available models dynamically
     models_raw = list_gemini_models()
     if "No models available" in models_raw:
         raise RuntimeError("Your API key has no available Gemini models.")
 
-    # Pick first available model automatically
     model = models_raw.split("\n")[0]
 
     url = f"https://generativelanguage.googleapis.com/v1/{model}:generateContent?key={api_key}"
 
+    # 🔥 Condensed compression prompt
     prompt = f"""
-You are a senior executive assistant.
-Tone: {tone}.
+Task: Condensed compression summary.
 
-Summarize into:
-1) One concise paragraph
-2) 5 key bullet points
-3) Action Items (max 3)
+Strict Rules:
+- Output ONLY the compressed summary.
+- No title. No intro. No conclusion.
+- Do NOT add action items.
+- Do NOT add recommendations.
+- Do NOT expand beyond the source.
+- Do NOT infer missing information.
+- Remove examples, background, pleasantries.
+- Keep only core arguments and key facts.
+- Be strictly objective.
+- Use 4–6 bullet points ONLY.
+- Each bullet ≤ 15 words.
+- Target total length: 40–100 words.
 
 Content:
-{raw_text[:30000]}
+{raw_text[:20000]}
 """
 
     payload = {
@@ -118,7 +126,7 @@ Content:
 
     data = response.json()
 
-    return data["candidates"][0]["content"]["parts"][0]["text"]
+    return data["candidates"][0]["content"]["parts"][0]["text"].strip()
 
 
 # ===============================
@@ -130,6 +138,13 @@ def send_email_sendgrid(subject: str, body: str) -> None:
     api_key = os.environ.get("SENDGRID_API_KEY")
     email_from = os.environ.get("EMAIL_FROM")
     email_to = os.environ.get("EMAIL_TO")
+
+    if not api_key:
+        raise RuntimeError("Missing SENDGRID_API_KEY")
+    if not email_from:
+        raise RuntimeError("Missing EMAIL_FROM")
+    if not email_to:
+        raise RuntimeError("Missing EMAIL_TO")
 
     recipients = [{"email": e.strip()} for e in email_to.split(",") if e.strip()]
 
@@ -162,6 +177,11 @@ def send_telegram(message: str) -> None:
 
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+
+    if not token:
+        raise RuntimeError("Missing TELEGRAM_BOT_TOKEN")
+    if not chat_id:
+        raise RuntimeError("Missing TELEGRAM_CHAT_ID")
 
     url = f"https://api.telegram.org/bot{token}/sendMessage"
 

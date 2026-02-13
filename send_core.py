@@ -35,7 +35,38 @@ def extract_text_from_upload(uploaded_file) -> str:
 
 
 # ===============================
-# GEMINI SUMMARY (REST v1 – FIXED)
+# LIST AVAILABLE MODELS
+# ===============================
+
+def list_gemini_models() -> str:
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        raise RuntimeError("Missing GEMINI_API_KEY")
+
+    url = f"https://generativelanguage.googleapis.com/v1/models?key={api_key}"
+    r = requests.get(url, timeout=30)
+
+    if r.status_code != 200:
+        raise RuntimeError(f"ListModels error {r.status_code}: {r.text}")
+
+    data = r.json()
+    models = data.get("models", [])
+
+    supported = []
+    for m in models:
+        name = m.get("name", "")
+        methods = m.get("supportedGenerationMethods", [])
+        if "generateContent" in methods:
+            supported.append(name)
+
+    if not supported:
+        return "No models available for generateContent."
+
+    return "\n".join(supported)
+
+
+# ===============================
+# GEMINI SUMMARY (AUTO MODEL PICK)
 # ===============================
 
 def summarize_with_gemini(raw_text: str, tone: str = "professional") -> str:
@@ -47,9 +78,15 @@ def summarize_with_gemini(raw_text: str, tone: str = "professional") -> str:
     if not api_key:
         raise RuntimeError("Missing GEMINI_API_KEY")
 
-    model = "gemini-1.5-flash"   # stable model
+    # Get available models dynamically
+    models_raw = list_gemini_models()
+    if "No models available" in models_raw:
+        raise RuntimeError("Your API key has no available Gemini models.")
 
-    url = f"https://generativelanguage.googleapis.com/v1/models/{model}:generateContent?key={api_key}"
+    # Pick first available model automatically
+    model = models_raw.split("\n")[0]
+
+    url = f"https://generativelanguage.googleapis.com/v1/{model}:generateContent?key={api_key}"
 
     prompt = f"""
 You are a senior executive assistant.

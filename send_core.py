@@ -34,38 +34,35 @@ def extract_text_from_upload(uploaded_file) -> str:
             return uploaded_file.read().decode("utf-8", errors="ignore").strip()
 
         return ""
+
     except Exception as e:
         raise RuntimeError(f"File extraction failed: {e}") from e
 
 
 # ===============================
-# GEMINI SUMMARY (Official SDK)
+# GEMINI SUMMARY (Stable Version)
 # ===============================
 
 def summarize_with_gemini(raw_text: str, tone: str = "professional") -> str:
     """
-    Generate executive summary using Gemini via Google official SDK.
-    Fixes v1beta model 404 problems.
+    Generate executive summary using Gemini (official SDK).
+    Uses stable 'flash-latest' model to avoid 404 errors.
     """
-    if not raw_text.strip():
-        return "No content provided.\n\n- Action: N/A\n- Issue: N/A\n- Next: N/A"
 
-    api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if not raw_text.strip():
+        return "No content provided."
+
+    api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
         raise RuntimeError("GEMINI_API_KEY missing in Secrets.")
 
-    # Recommended: keep model configurable via Secrets
-    # Use a safe default. If you still face model issues, try "gemini-1.5-flash" or "gemini-1.5-pro"
-    model_name = os.getenv("GEMINI_MODEL", "gemini-1.5-flash").strip()
-
-    # Configure SDK
+    # Configure Gemini SDK
     genai.configure(api_key=api_key)
 
-    # Create model
-    model = genai.GenerativeModel(model_name)
+    # Use stable alias model (avoids model version errors)
+    model = genai.GenerativeModel("gemini-1.5-flash-latest")
 
-    # Keep input bounded (avoid huge requests)
-    clipped = raw_text[:40000]
+    clipped_text = raw_text[:30000]
 
     prompt = f"""
 You are a senior executive assistant.
@@ -76,24 +73,22 @@ Summarize the content into:
 2) Exactly 5 bullet key takeaways
 3) A section titled "Action Items" (max 3)
 
-If the content is mixed-language, keep the summary in English.
+If the content is mixed-language, respond in English.
 
 Content:
-{clipped}
-""".strip()
+{clipped_text}
+"""
 
     try:
         response = model.generate_content(prompt)
 
-        # response.text is the main plain text output
-        if not getattr(response, "text", None):
-            # fallback if response has no text
-            return "Summary generated but returned empty text."
+        if not hasattr(response, "text") or not response.text:
+            return "Summary generated but returned empty response."
 
         return response.text.strip()
 
     except Exception as e:
-        raise RuntimeError(f"Gemini request failed. Model={model_name}. Details: {e}") from e
+        raise RuntimeError(f"Gemini request failed: {e}") from e
 
 
 # ===============================
@@ -101,12 +96,9 @@ Content:
 # ===============================
 
 def send_email_sendgrid(subject: str, body: str) -> None:
-    """
-    Send email using SendGrid API.
-    """
-    api_key = os.environ.get("SENDGRID_API_KEY", "").strip()
-    email_from = os.environ.get("EMAIL_FROM", "").strip()   # must be verified in SendGrid
-    email_to = os.environ.get("EMAIL_TO", "").strip()       # comma-separated
+    api_key = os.environ.get("SENDGRID_API_KEY")
+    email_from = os.environ.get("EMAIL_FROM")
+    email_to = os.environ.get("EMAIL_TO")
 
     if not api_key:
         raise RuntimeError("SENDGRID_API_KEY missing.")
@@ -116,8 +108,6 @@ def send_email_sendgrid(subject: str, body: str) -> None:
         raise RuntimeError("EMAIL_TO missing.")
 
     recipients = [{"email": e.strip()} for e in email_to.split(",") if e.strip()]
-    if not recipients:
-        raise RuntimeError("EMAIL_TO has no valid recipients.")
 
     payload = {
         "personalizations": [{"to": recipients}],
@@ -150,11 +140,8 @@ def send_email_sendgrid(subject: str, body: str) -> None:
 # ===============================
 
 def send_telegram(message: str) -> None:
-    """
-    Send message to Telegram bot chat.
-    """
-    token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
-    chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+    token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
 
     if not token:
         raise RuntimeError("TELEGRAM_BOT_TOKEN missing.")
@@ -186,8 +173,5 @@ def send_telegram(message: str) -> None:
 # ===============================
 
 def send_both(subject: str, body: str) -> None:
-    """
-    Send summary to both Email and Telegram.
-    """
     send_email_sendgrid(subject, body)
     send_telegram(body)

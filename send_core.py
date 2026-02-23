@@ -10,10 +10,14 @@ import PyPDF2
 import docx
 
 from reportlab.lib.pagesizes import A4
-from reportlab.pdfgen import canvas
+from reportlab.lib.units import mm
+from reportlab.lib import colors
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, ListFlowable, ListItem
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
 from twilio.rest import Client
 
@@ -21,7 +25,7 @@ from twilio.rest import Client
 MYT = timezone(timedelta(hours=8))
 DB_PATH = os.getenv("HISTORY_DB_PATH", "history.db")
 
-# ✅ You said you already use TTF now
+# Your repo font (TTF)
 DEFAULT_CJK_FONT_PATH = os.getenv("PDF_FONT_PATH", "assets/fonts/NotoSansSC-Regular.ttf")
 DEFAULT_CJK_FONT_NAME = os.getenv("PDF_FONT_NAME", "NotoSansSC")
 
@@ -38,8 +42,7 @@ def _require_env(name: str) -> str:
 
 
 def _clip(s: str, limit: int) -> str:
-    s = (s or "").strip()
-    return s[:limit]
+    return (s or "").strip()[:limit]
 
 
 # ===============================
@@ -88,13 +91,12 @@ def detect_language(text: str) -> str:
 
 
 # ===============================
-# GEMINI MODEL DISCOVERY
+# GEMINI
 # ===============================
 
 def pick_model() -> str:
     """Pick a model that supports generateContent. Prefer flash, then pro."""
     api_key = _require_env("GEMINI_API_KEY")
-
     url = f"https://generativelanguage.googleapis.com/v1/models?key={api_key}"
     r = requests.get(url, timeout=30)
     if r.status_code != 200:
@@ -123,7 +125,6 @@ def pick_model() -> str:
 def gemini_generate(prompt: str, model: str) -> str:
     api_key = _require_env("GEMINI_API_KEY")
     url = f"https://generativelanguage.googleapis.com/v1/{model}:generateContent?key={api_key}"
-
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
     r = requests.post(url, json=payload, timeout=90)
 
@@ -228,7 +229,7 @@ Chunk {idx}/{total}:
 def summarize_long_document(raw_text: str, force_lang: str | None = None):
     """
     Returns: (summary, lang, meta)
-    meta includes: chunks (we keep model internally but app won't display)
+    meta includes: chunks (app won't display model)
     """
     raw_text = (raw_text or "").strip()
     if not raw_text:
@@ -241,32 +242,29 @@ def summarize_long_document(raw_text: str, force_lang: str | None = None):
     chunks = chunk_text(raw_text, max_chars=12000, overlap=500)
 
     if len(chunks) <= 1:
-        prompt = _condensed_prompt(_clip(raw_text, 20000), out_lang)
-        final = gemini_generate(prompt, model)
+        final = gemini_generate(_condensed_prompt(_clip(raw_text, 20000), out_lang), model)
         return final, out_lang, {"chunks": len(chunks)}
 
     partials = []
     for i, ch in enumerate(chunks, start=1):
-        p = _chunk_prompt(_clip(ch, 14000), out_lang, i, len(chunks))
-        partials.append(gemini_generate(p, model))
+        partials.append(gemini_generate(_chunk_prompt(_clip(ch, 14000), out_lang, i, len(chunks)), model))
 
     merged = "\n".join(partials)
-    final_prompt = _condensed_prompt(_clip(merged, 20000), out_lang)
-    final = gemini_generate(final_prompt, model)
+    final = gemini_generate(_condensed_prompt(_clip(merged, 20000), out_lang), model)
     return final, out_lang, {"chunks": len(chunks)}
 
 
 # ===============================
-# PDF (CJK SUPPORT)
+# PDF (NO WEIRD EN WORD BREAKS + CJK OK)
 # ===============================
 
 def _register_cjk_font() -> str:
     """
-    1) Prefer your TTF
-    2) Fallback to built-in CJK CID font (STSong-Light) -> avoids Chinese squares
+    1) Prefer your repo TTF font
+    2) Fallback to built-in CID CJK font (STSong-Light)
     3) Final fallback Helvetica
     """
-    # Try TTF in repo first
+    # TTF first
     try:
         if os.path.exists(DEFAULT_CJK_FONT_PATH):
             if DEFAULT_CJK_FONT_NAME not in pdfmetrics.getRegisteredFontNames():
@@ -275,7 +273,7 @@ def _register_cjk_font() -> str:
     except Exception:
         pass
 
-    # Fallback: built-in CID font for Chinese
+    # CID fallback
     try:
         fallback_name = "STSong-Light"
         if fallback_name not in pdfmetrics.getRegisteredFontNames():
@@ -285,46 +283,85 @@ def _register_cjk_font() -> str:
         return "Helvetica"
 
 
-def summary_to_pdf_bytes(title: str, text: str) -> bytes:
+def _parse_bullets(summary_text: str) -> list[str]:
+    lines = []
+    for raw in (summary_text or "").splitlines():
+        s = raw.strip()
+        if not s:
+            continue
+        # Normalize bullets
+        s = re.sub(r"^[•\-\*\u2022]\s*", "", s)
+        lines.append(s)
+    return lines
+
+
+def summary_to_pdf_bytes(title: str, summary_text: str) -> bytes:
     font_name = _register_cjk_font()
 
-    buffer = BytesIO()
-    c = canvas.Canvas(buffer, pagesize=A4)
-    width, height = A4
+    buf = BytesIO()
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=A4,
+        leftMargin=18 * mm,
+        rightMargin=18 * mm,
+        topMargin=18 * mm,
+        bottomMargin=18 * mm,
+        title=title,
+        author="Daily Summary Bot",
+    )
 
-    x = 40
-    y = height - 60
+    styles = getSampleStyleSheet()
 
-    c.setFont(font_name, 14)
-    c.drawString(x, y, title)
-    y -= 26
+    TitleStyle = ParagraphStyle(
+        "TitleStyle",
+        parent=styles["Title"],
+        fontName=font_name,
+        fontSize=16,
+        leading=20,
+        textColor=colors.black,
+        spaceAfter=10,
+    )
 
-    c.setFont(font_name, 11)
+    SubtleStyle = ParagraphStyle(
+        "SubtleStyle",
+        parent=styles["Normal"],
+        fontName=font_name,
+        fontSize=10.5,
+        leading=14,
+        textColor=colors.HexColor("#333333"),
+        spaceAfter=8,
+    )
 
-    # Safer wrapping for CJK
-    max_len = 48 if font_name != "Helvetica" else 95
+    BulletStyle = ParagraphStyle(
+        "BulletStyle",
+        parent=styles["Normal"],
+        fontName=font_name,
+        fontSize=12,
+        leading=17,
+        textColor=colors.black,
+    )
 
-    lines = []
-    for raw_line in (text or "").splitlines():
-        raw_line = raw_line.rstrip()
-        if not raw_line:
-            lines.append("")
-            continue
-        while len(raw_line) > max_len:
-            lines.append(raw_line[:max_len])
-            raw_line = raw_line[max_len:]
-        lines.append(raw_line)
+    story = []
+    story.append(Paragraph(title, TitleStyle))
+    story.append(Paragraph("Condensed compression (objective, no expansion).", SubtleStyle))
+    story.append(Spacer(1, 8))
 
-    for line in lines:
-        if y < 60:
-            c.showPage()
-            c.setFont(font_name, 11)
-            y = height - 60
-        c.drawString(x, y, line)
-        y -= 16
+    bullets = _parse_bullets(summary_text)
+    if not bullets:
+        story.append(Paragraph("No summary content.", BulletStyle))
+    else:
+        lf = ListFlowable(
+            [ListItem(Paragraph(b, BulletStyle), leftIndent=10) for b in bullets],
+            bulletType="bullet",
+            bulletFontName=font_name,
+            bulletFontSize=10,
+            bulletDedent=4,
+            leftIndent=14,
+        )
+        story.append(lf)
 
-    c.save()
-    return buffer.getvalue()
+    doc.build(story)
+    return buf.getvalue()
 
 
 # ===============================
@@ -414,7 +451,7 @@ def send_email_sendgrid(subject: str, body: str) -> None:
 
     payload = {
         "personalizations": [{"to": recipients}],
-        "from": {"email": email_from},
+        "from": {"email": email_from, "name": "Daily Summary Bot"},
         "subject": subject,
         "content": [{"type": "text/plain", "value": body}],
         "reply_to": {"email": email_from},
@@ -441,7 +478,6 @@ def send_telegram(message: str) -> None:
         json={"chat_id": chat_id, "text": message, "disable_web_page_preview": True},
         timeout=30,
     )
-
     if r.status_code != 200:
         raise RuntimeError(f"Telegram error {r.status_code}: {r.text}")
 
@@ -458,19 +494,12 @@ def _normalize_my_number(n: str) -> str:
 
 
 def sms_ultra_short(summary_text: str) -> str:
-    """Even shorter SMS-friendly text (~320 chars)."""
     summary_text = (summary_text or "").strip()
     if not summary_text:
         return ""
-
     lines = [ln.strip() for ln in summary_text.splitlines() if ln.strip()]
     compact = "\n".join(lines)
-
-    limit = 320
-    if len(compact) <= limit:
-        return compact
-
-    return compact[:limit].rstrip()
+    return compact[:320].rstrip() if len(compact) > 320 else compact
 
 
 def send_sms_twilio(message: str) -> None:
@@ -480,7 +509,6 @@ def send_sms_twilio(message: str) -> None:
     to_nums = _require_env("SMS_TO")
 
     client = Client(sid, token)
-
     numbers = [_normalize_my_number(n) for n in to_nums.split(",") if n.strip()]
     if not numbers:
         raise RuntimeError("SMS_TO has no valid numbers.")
@@ -498,11 +526,9 @@ def send_selected(
     *,
     summary_for_sms: str | None = None
 ) -> None:
-    """Send based on toggles. SMS uses short summary to reduce cost."""
     if send_email:
         send_email_sendgrid(subject, body)
     if send_telegram_flag:
         send_telegram(body)
     if send_sms_flag:
-        sms_text = sms_ultra_short(summary_for_sms or body)
-        send_sms_twilio(sms_text)
+        send_sms_twilio(sms_ultra_short(summary_for_sms or body))

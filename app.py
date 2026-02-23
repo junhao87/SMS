@@ -13,6 +13,43 @@ from send_core import (
 MYT = timezone(timedelta(hours=8))
 
 st.set_page_config(page_title="Daily Summary Bot", layout="centered")
+st.markdown("""
+<style>
+/* Page spacing */
+.block-container {padding-top: 2rem; padding-bottom: 2rem; max-width: 920px;}
+
+/* Headings */
+h1, h2, h3 {letter-spacing: -0.02em;}
+
+/* Inputs look */
+div[data-baseweb="input"], textarea {
+  border-radius: 14px !important;
+}
+
+/* Buttons */
+.stButton > button {
+  border-radius: 14px;
+  border: 1px solid rgba(255,255,255,0.14);
+  background: linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0.02));
+  color: #fff;
+  padding: 0.6rem 1rem;
+}
+
+.stButton > button:hover {
+  border: 1px solid rgba(255,255,255,0.28);
+  transform: translateY(-1px);
+}
+
+/* Expander */
+details {
+  border-radius: 14px;
+  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(255,255,255,0.03);
+  padding: 0.25rem 0.75rem;
+}
+</style>
+""", unsafe_allow_html=True)
+
 st.title("Daily Summary Bot")
 
 uploaded = st.file_uploader("Upload PDF/DOCX/TXT", type=["pdf", "docx", "txt"])

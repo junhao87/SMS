@@ -14,7 +14,7 @@ MYT = timezone(timedelta(hours=8))
 
 st.set_page_config(page_title="Daily Summary Bot", layout="centered")
 
-# Premium UI CSS (black/grey/white)
+# Premium UI CSS (black/grey/white + premium overlay loader)
 st.markdown("""
 <style>
 .block-container {padding-top: 2rem; padding-bottom: 2rem; max-width: 920px;}
@@ -35,12 +35,52 @@ details {
   padding: 0.25rem 0.75rem;
 }
 small {opacity: 0.8;}
-/* Simple premium loader */
-.loaderWrap {display:flex; align-items:center; gap:10px; opacity:.9; padding:8px 0;}
-.dot {width:8px; height:8px; border-radius:50%; background:rgba(255,255,255,.75); animation: blink 1s infinite;}
-.dot:nth-child(2){animation-delay:.15s;}
-.dot:nth-child(3){animation-delay:.30s;}
-@keyframes blink {0%, 100% {opacity:.25; transform:translateY(0);} 50% {opacity:1; transform:translateY(-2px);} }
+
+/* Premium overlay loader */
+#overlayLoader {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.55);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 999999;
+}
+.loaderCard{
+  width: min(520px, 88vw);
+  border-radius: 18px;
+  padding: 22px 20px;
+  border: 1px solid rgba(255,255,255,0.10);
+  background: linear-gradient(180deg, rgba(255,255,255,0.10), rgba(255,255,255,0.04));
+  box-shadow: 0 18px 60px rgba(0,0,0,.45);
+}
+.loaderRow{display:flex; gap:16px; align-items:center;}
+.ring{
+  width:42px;height:42px;border-radius:50%;
+  background: conic-gradient(from 0deg, rgba(255,255,255,.9), rgba(255,255,255,.12), rgba(255,255,255,.9));
+  -webkit-mask: radial-gradient(farthest-side, transparent 62%, #000 63%);
+  mask: radial-gradient(farthest-side, transparent 62%, #000 63%);
+  animation: spin 0.9s linear infinite;
+}
+@keyframes spin{to{transform: rotate(360deg);}}
+.loaderTitle{font-size:14px; font-weight:600; color:#fff;}
+.loaderSub{font-size:12px; opacity:.72; margin-top:4px; color:#fff;}
+.shimmer{
+  margin-top:14px;
+  height:10px;border-radius:999px;
+  background: rgba(255,255,255,0.10);
+  overflow:hidden; position:relative;
+}
+.shimmer:after{
+  content:"";
+  position:absolute; inset:0;
+  transform: translateX(-60%);
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,.25), transparent);
+  animation: move 1.2s infinite;
+}
+@keyframes move{to{transform: translateX(60%);}}
 </style>
 """, unsafe_allow_html=True)
 
@@ -50,6 +90,23 @@ st.caption("Upload PDF/DOCX/TXT or paste text → Condensed summary → Preview 
 # View state
 if "view" not in st.session_state:
     st.session_state["view"] = "main"  # main / history
+
+
+def overlay_loader_html(title="Working", subtitle="Please wait…"):
+    return f"""
+<div id="overlayLoader">
+  <div class="loaderCard">
+    <div class="loaderRow">
+      <div class="ring"></div>
+      <div>
+        <div class="loaderTitle">{title}</div>
+        <div class="loaderSub">{subtitle}</div>
+      </div>
+    </div>
+    <div class="shimmer"></div>
+  </div>
+</div>
+"""
 
 
 # =========================
@@ -77,7 +134,7 @@ def render_history():
 
 
 # =========================
-# MAIN / ROUTING
+# ROUTING
 # =========================
 if st.session_state["view"] == "history":
     render_history()
@@ -91,7 +148,6 @@ uploaded = st.file_uploader("Upload a file (PDF / DOCX / TXT)", type=["pdf", "do
 pasted = st.text_area("Or paste text / paragraph here", height=200)
 subject_prefix = st.text_input("Subject Prefix", value="[Daily Report]")
 
-# Output language
 lang_mode = st.selectbox("Output language", ["Auto (detect)", "English", "中文"], index=0)
 force_lang = None
 if lang_mode == "English":
@@ -99,7 +155,7 @@ if lang_mode == "English":
 elif lang_mode == "中文":
     force_lang = "zh"
 
-# Send toggles
+# send toggles
 st.subheader("Send Options")
 colA, colB, colC = st.columns(3)
 with colA:
@@ -111,7 +167,7 @@ with colC:
 
 st.caption("Tip: SMS is auto-shortened (~300 chars) to reduce multi-part SMS cost.")
 
-# Buttons
+# buttons
 col1, col2, col3 = st.columns(3)
 gen_clicked = col1.button("Generate Summary", use_container_width=True)
 discard_clicked = col2.button("Discard / Undo", use_container_width=True)
@@ -130,16 +186,8 @@ if discard_clicked:
 
 
 # =========================
-# GENERATE (with premium loader)
+# GENERATE
 # =========================
-def show_loader(placeholder, text="Generating condensed summary"):
-    placeholder.markdown(f"""
-    <div class="loaderWrap">
-      <div class="dot"></div><div class="dot"></div><div class="dot"></div>
-      <div style="font-size:14px;">{text}…</div>
-    </div>
-    """, unsafe_allow_html=True)
-
 if gen_clicked:
     file_text = extract_text_from_upload(uploaded)
     raw_text = (pasted.strip() + "\n\n" + file_text.strip()).strip()
@@ -147,25 +195,24 @@ if gen_clicked:
     if not raw_text:
         st.warning("Please upload a file or paste some text first.")
     else:
-        loader = st.empty()
+        overlay = st.empty()
+        overlay.markdown(
+            overlay_loader_html("Generating condensed summary", "Analyzing content and compressing…"),
+            unsafe_allow_html=True
+        )
         try:
-            show_loader(loader, "Generating condensed summary")
-
-            # still keep spinner for reliability, but loader makes it feel premium
-            with st.spinner(""):
-                summary, lang, meta = summarize_long_document(raw_text, force_lang=force_lang)
-
-            loader.empty()
+            summary, lang, meta = summarize_long_document(raw_text, force_lang=force_lang)
+            overlay.empty()
 
             st.session_state["summary"] = summary
             st.session_state["lang"] = lang
             st.session_state["meta"] = meta
             st.session_state["sent"] = False
 
-            # ✅ Do NOT show model/chunks success message
-            # optional: st.toast("Summary ready ✅")
+            st.toast("Summary ready ✅", icon="✅")
+            st.success("Summary generated.")
         except Exception as e:
-            loader.empty()
+            overlay.empty()
             st.error(f"Gemini error: {e}")
 
 
@@ -202,21 +249,21 @@ if "summary" in st.session_state:
         elif not send_email and not send_tg and not send_sms:
             st.warning("All send options are OFF. Turn on Gmail / Telegram / SMS.")
         else:
+            overlay = st.empty()
+            overlay.markdown(
+                overlay_loader_html("Sending", "Delivering to selected channels…"),
+                unsafe_allow_html=True
+            )
             try:
                 body = f"{title}\n\n{st.session_state['summary']}"
-
-                send_loader = st.empty()
-                show_loader(send_loader, "Sending")
-                with st.spinner(""):
-                    send_selected(
-                        title,
-                        body,
-                        send_email=send_email,
-                        send_telegram_flag=send_tg,
-                        send_sms_flag=send_sms,
-                        summary_for_sms=st.session_state["summary"],
-                    )
-                send_loader.empty()
+                send_selected(
+                    title,
+                    body,
+                    send_email=send_email,
+                    send_telegram_flag=send_tg,
+                    send_sms_flag=send_sms,
+                    summary_for_sms=st.session_state["summary"],
+                )
 
                 save_history(
                     title=title,
@@ -229,6 +276,9 @@ if "summary" in st.session_state:
                 )
 
                 st.session_state["sent"] = True
+                overlay.empty()
+                st.toast("Sent ✅", icon="✅")
                 st.success("Sent successfully ✅ and saved to history.")
             except Exception as e:
+                overlay.empty()
                 st.error(f"Send error: {e}")

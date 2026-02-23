@@ -14,7 +14,7 @@ MYT = timezone(timedelta(hours=8))
 
 st.set_page_config(page_title="Daily Summary Bot", layout="centered")
 
-# Premium UI CSS
+# Premium UI CSS (black/grey/white)
 st.markdown("""
 <style>
 .block-container {padding-top: 2rem; padding-bottom: 2rem; max-width: 920px;}
@@ -34,15 +34,51 @@ details {
   background: rgba(255,255,255,0.03);
   padding: 0.25rem 0.75rem;
 }
+small {opacity: 0.8;}
 </style>
 """, unsafe_allow_html=True)
 
 st.title("Daily Summary Bot")
-st.caption("Upload PDF/DOCX/TXT or paste text → Condensed summary → Preview → Send → Save History")
+st.caption("Upload PDF/DOCX/TXT or paste text → Condensed summary → Preview → Download PDF → Confirm → Send → Save History")
 
 # View state
 if "view" not in st.session_state:
     st.session_state["view"] = "main"  # main / history
+
+
+# =========================
+# HISTORY PAGE
+# =========================
+def render_history():
+    st.subheader("History (Latest 50)")
+    if st.button("← Back to Main", use_container_width=False):
+        st.session_state["view"] = "main"
+        st.rerun()
+
+    try:
+        rows = load_history(50)
+        if not rows:
+            st.info("No history yet.")
+            return
+
+        for r in rows:
+            flags = f"email={r.get('send_email')} tg={r.get('send_telegram')} sms={r.get('send_sms')}"
+            with st.expander(f"#{r['id']} | {r['created_at']} | {r['lang']} | {flags}"):
+                st.write(r["title"])
+                st.text(r["summary"])
+                meta = r.get("meta")
+                if meta:
+                    st.caption(f"meta: {meta}")
+    except Exception as e:
+        st.error(f"History error: {e}")
+
+
+# =========================
+# MAIN PAGE
+# =========================
+if st.session_state["view"] == "history":
+    render_history()
+    st.stop()
 
 # --- Input
 tone = st.selectbox("Tone (minimal impact in condensed mode)", ["professional", "neutral", "friendly"], index=1)
@@ -58,13 +94,17 @@ if lang_mode == "English":
 elif lang_mode == "中文":
     force_lang = "zh"
 
-# --- Send toggles
+# --- Send toggles (Email / Telegram / SMS)
 st.subheader("Send Options")
-colA, colB = st.columns(2)
+colA, colB, colC = st.columns(3)
 with colA:
     send_email = st.toggle("Send Gmail (SendGrid)", value=True)
 with colB:
     send_tg = st.toggle("Send Telegram", value=True)
+with colC:
+    send_sms = st.toggle("Send SMS (Twilio)", value=False)
+
+st.caption("Tip: SMS is auto-shortened (~300 chars) to reduce multi-part SMS cost.")
 
 # --- Buttons
 col1, col2, col3 = st.columns(3)
@@ -83,28 +123,7 @@ if discard_clicked:
     st.session_state.pop("sent", None)
     st.success("Cleared. Nothing will be sent.")
 
-# --- History page
-if st.session_state["view"] == "history":
-    st.subheader("History (Latest 50)")
-    if st.button("← Back to Main"):
-        st.session_state["view"] = "main"
-        st.rerun()
-
-    try:
-        rows = load_history(50)
-        if not rows:
-            st.info("No history yet.")
-        else:
-            for r in rows:
-                with st.expander(f"#{r['id']} | {r['created_at']} | {r['lang']} | email={r.get('send_email')} tg={r.get('send_telegram')}"):
-                    st.write(r["title"])
-                    st.text(r["summary"])
-    except Exception as e:
-        st.error(f"History error: {e}")
-
-    st.stop()
-
-# --- Main page: Generate
+# --- Generate summary
 if gen_clicked:
     file_text = extract_text_from_upload(uploaded)
     raw_text = (pasted.strip() + "\n\n" + file_text.strip()).strip()
@@ -121,7 +140,9 @@ if gen_clicked:
             st.session_state["meta"] = meta
             st.session_state["sent"] = False
 
-            st.success(f"Summary generated. Lang={lang}. Chunks={meta.get('chunks')}, Model={meta.get('model')}")
+            st.success(
+                f"Summary generated. Lang={lang}. Chunks={meta.get('chunks')}, Model={meta.get('model')}"
+            )
         except Exception as e:
             st.error(f"Gemini error: {e}")
 
@@ -145,7 +166,11 @@ if "summary" in st.session_state:
     st.divider()
     st.subheader("Send Control")
 
-    confirm = st.checkbox("I confirm this condensed summary is correct and I want to send it.", value=False)
+    confirm = st.checkbox(
+        "I confirm this condensed summary is correct and I want to send it.",
+        value=False
+    )
+
     send_clicked = st.button("Send Now", type="primary", use_container_width=True)
 
     if send_clicked:
@@ -153,20 +178,31 @@ if "summary" in st.session_state:
             st.info("Already sent. Generate a new summary to send again.")
         elif not confirm:
             st.warning("Please tick confirmation before sending.")
-        elif not send_email and not send_tg:
-            st.warning("Both send options are OFF. Turn on Gmail or Telegram.")
+        elif not send_email and not send_tg and not send_sms:
+            st.warning("All send options are OFF. Turn on Gmail / Telegram / SMS.")
         else:
             try:
                 body = f"{title}\n\n{st.session_state['summary']}"
-                with st.spinner("Sending..."):
-                    send_selected(title, body, send_email=send_email, send_telegram_flag=send_tg)
 
+                with st.spinner("Sending..."):
+                    send_selected(
+                        title,
+                        body,
+                        send_email=send_email,
+                        send_telegram_flag=send_tg,
+                        send_sms_flag=send_sms,
+                        summary_for_sms=st.session_state["summary"],
+                        lang=st.session_state.get("lang", "en"),
+                    )
+
+                # Save history after successful send
                 save_history(
                     title=title,
                     summary=st.session_state["summary"],
                     lang=st.session_state.get("lang", "en"),
                     send_email=send_email,
                     send_telegram=send_tg,
+                    send_sms=send_sms,
                     meta=st.session_state.get("meta", {}),
                 )
 

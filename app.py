@@ -35,6 +35,12 @@ details {
   padding: 0.25rem 0.75rem;
 }
 small {opacity: 0.8;}
+/* Simple premium loader */
+.loaderWrap {display:flex; align-items:center; gap:10px; opacity:.9; padding:8px 0;}
+.dot {width:8px; height:8px; border-radius:50%; background:rgba(255,255,255,.75); animation: blink 1s infinite;}
+.dot:nth-child(2){animation-delay:.15s;}
+.dot:nth-child(3){animation-delay:.30s;}
+@keyframes blink {0%, 100% {opacity:.25; transform:translateY(0);} 50% {opacity:1; transform:translateY(-2px);} }
 </style>
 """, unsafe_allow_html=True)
 
@@ -66,27 +72,26 @@ def render_history():
             with st.expander(f"#{r['id']} | {r['created_at']} | {r['lang']} | {flags}"):
                 st.write(r["title"])
                 st.text(r["summary"])
-                meta = r.get("meta")
-                if meta:
-                    st.caption(f"meta: {meta}")
     except Exception as e:
         st.error(f"History error: {e}")
 
 
 # =========================
-# MAIN PAGE
+# MAIN / ROUTING
 # =========================
 if st.session_state["view"] == "history":
     render_history()
     st.stop()
 
-# --- Input
-tone = st.selectbox("Tone (minimal impact in condensed mode)", ["professional", "neutral", "friendly"], index=1)
+
+# =========================
+# INPUT
+# =========================
 uploaded = st.file_uploader("Upload a file (PDF / DOCX / TXT)", type=["pdf", "docx", "txt"])
 pasted = st.text_area("Or paste text / paragraph here", height=200)
 subject_prefix = st.text_input("Subject Prefix", value="[Daily Report]")
 
-# --- Output language
+# Output language
 lang_mode = st.selectbox("Output language", ["Auto (detect)", "English", "中文"], index=0)
 force_lang = None
 if lang_mode == "English":
@@ -94,7 +99,7 @@ if lang_mode == "English":
 elif lang_mode == "中文":
     force_lang = "zh"
 
-# --- Send toggles (Email / Telegram / SMS)
+# Send toggles
 st.subheader("Send Options")
 colA, colB, colC = st.columns(3)
 with colA:
@@ -106,7 +111,7 @@ with colC:
 
 st.caption("Tip: SMS is auto-shortened (~300 chars) to reduce multi-part SMS cost.")
 
-# --- Buttons
+# Buttons
 col1, col2, col3 = st.columns(3)
 gen_clicked = col1.button("Generate Summary", use_container_width=True)
 discard_clicked = col2.button("Discard / Undo", use_container_width=True)
@@ -123,7 +128,18 @@ if discard_clicked:
     st.session_state.pop("sent", None)
     st.success("Cleared. Nothing will be sent.")
 
-# --- Generate summary
+
+# =========================
+# GENERATE (with premium loader)
+# =========================
+def show_loader(placeholder, text="Generating condensed summary"):
+    placeholder.markdown(f"""
+    <div class="loaderWrap">
+      <div class="dot"></div><div class="dot"></div><div class="dot"></div>
+      <div style="font-size:14px;">{text}…</div>
+    </div>
+    """, unsafe_allow_html=True)
+
 if gen_clicked:
     file_text = extract_text_from_upload(uploaded)
     raw_text = (pasted.strip() + "\n\n" + file_text.strip()).strip()
@@ -131,22 +147,31 @@ if gen_clicked:
     if not raw_text:
         st.warning("Please upload a file or paste some text first.")
     else:
+        loader = st.empty()
         try:
-            with st.spinner("Summarizing (auto-chunk if long)..."):
+            show_loader(loader, "Generating condensed summary")
+
+            # still keep spinner for reliability, but loader makes it feel premium
+            with st.spinner(""):
                 summary, lang, meta = summarize_long_document(raw_text, force_lang=force_lang)
+
+            loader.empty()
 
             st.session_state["summary"] = summary
             st.session_state["lang"] = lang
             st.session_state["meta"] = meta
             st.session_state["sent"] = False
 
-            st.success(
-                f"Summary generated. Lang={lang}. Chunks={meta.get('chunks')}, Model={meta.get('model')}"
-            )
+            # ✅ Do NOT show model/chunks success message
+            # optional: st.toast("Summary ready ✅")
         except Exception as e:
+            loader.empty()
             st.error(f"Gemini error: {e}")
 
-# --- Preview + PDF + Send
+
+# =========================
+# PREVIEW + PDF + SEND
+# =========================
 if "summary" in st.session_state:
     st.subheader("Preview (Condensed)")
     st.text(st.session_state["summary"])
@@ -166,11 +191,7 @@ if "summary" in st.session_state:
     st.divider()
     st.subheader("Send Control")
 
-    confirm = st.checkbox(
-        "I confirm this condensed summary is correct and I want to send it.",
-        value=False
-    )
-
+    confirm = st.checkbox("I confirm this condensed summary is correct and I want to send it.", value=False)
     send_clicked = st.button("Send Now", type="primary", use_container_width=True)
 
     if send_clicked:
@@ -184,7 +205,9 @@ if "summary" in st.session_state:
             try:
                 body = f"{title}\n\n{st.session_state['summary']}"
 
-                with st.spinner("Sending..."):
+                send_loader = st.empty()
+                show_loader(send_loader, "Sending")
+                with st.spinner(""):
                     send_selected(
                         title,
                         body,
@@ -192,10 +215,9 @@ if "summary" in st.session_state:
                         send_telegram_flag=send_tg,
                         send_sms_flag=send_sms,
                         summary_for_sms=st.session_state["summary"],
-                        lang=st.session_state.get("lang", "en"),
                     )
+                send_loader.empty()
 
-                # Save history after successful send
                 save_history(
                     title=title,
                     summary=st.session_state["summary"],

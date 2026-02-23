@@ -8,13 +8,38 @@ from io import BytesIO
 import requests
 import PyPDF2
 import docx
+
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+
 from twilio.rest import Client
 
 
 MYT = timezone(timedelta(hours=8))
 DB_PATH = os.getenv("HISTORY_DB_PATH", "history.db")
+
+# Put a CJK font file in your repo, e.g.:
+# assets/fonts/NotoSansCJKsc-Regular.otf
+DEFAULT_CJK_FONT_PATH = os.getenv("PDF_FONT_PATH", "assets/fonts/NotoSansCJKsc-Regular.otf")
+DEFAULT_CJK_FONT_NAME = os.getenv("PDF_FONT_NAME", "NotoSansCJK")
+
+
+# ===============================
+# HELPERS
+# ===============================
+
+def _require_env(name: str) -> str:
+    v = os.getenv(name, "").strip()
+    if not v:
+        raise RuntimeError(f"Missing environment variable: {name}")
+    return v
+
+
+def _clip(s: str, limit: int) -> str:
+    s = (s or "").strip()
+    return s[:limit]
 
 
 # ===============================
@@ -22,29 +47,32 @@ DB_PATH = os.getenv("HISTORY_DB_PATH", "history.db")
 # ===============================
 
 def extract_text_from_upload(uploaded_file) -> str:
+    """
+    Extract text from PDF / DOCX / TXT uploaded via Streamlit.
+    """
     if uploaded_file is None:
         return ""
 
-    filename = uploaded_file.name.lower()
+    filename = (uploaded_file.name or "").lower()
 
     try:
         if filename.endswith(".pdf"):
             reader = PyPDF2.PdfReader(uploaded_file)
-            text = ""
+            parts = []
             for page in reader.pages:
-                text += (page.extract_text() or "") + "\n"
-            return text.strip()
+                parts.append((page.extract_text() or "").strip())
+            return "\n\n".join([p for p in parts if p]).strip()
 
         if filename.endswith(".docx"):
             document = docx.Document(uploaded_file)
-            return "\n".join([p.text for p in document.paragraphs]).strip()
+            return "\n".join([p.text for p in document.paragraphs if p.text.strip()]).strip()
 
         if filename.endswith(".txt"):
             return uploaded_file.read().decode("utf-8", errors="ignore").strip()
 
         return ""
     except Exception as e:
-        raise RuntimeError(f"File extraction failed: {e}")
+        raise RuntimeError(f"File extraction failed: {e}") from e
 
 
 # ===============================
@@ -52,7 +80,11 @@ def extract_text_from_upload(uploaded_file) -> str:
 # ===============================
 
 def detect_language(text: str) -> str:
-    if not text:
+    """
+    Simple heuristic: if CJK ratio >= 8% => zh, else en
+    """
+    text = text or ""
+    if not text.strip():
         return "en"
     cjk = len(re.findall(r"[\u4e00-\u9fff]", text))
     ratio = cjk / max(len(text), 1)
@@ -60,13 +92,15 @@ def detect_language(text: str) -> str:
 
 
 # ===============================
-# GEMINI MODEL
+# GEMINI MODEL DISCOVERY
 # ===============================
 
 def pick_model() -> str:
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        raise RuntimeError("Missing GEMINI_API_KEY")
+    """
+    Pick a model that supports generateContent.
+    Prefer flash, then pro.
+    """
+    api_key = _require_env("GEMINI_API_KEY")
 
     url = f"https://generativelanguage.googleapis.com/v1/models?key={api_key}"
     r = requests.get(url, timeout=30)
@@ -75,12 +109,14 @@ def pick_model() -> str:
 
     models = r.json().get("models", [])
     candidates = [
-        m["name"] for m in models
+        m.get("name", "")
+        for m in models
         if "generateContent" in m.get("supportedGenerationMethods", [])
     ]
+    candidates = [c for c in candidates if c]
 
     if not candidates:
-        raise RuntimeError("No Gemini models available")
+        raise RuntimeError("No Gemini models available for generateContent under this API key.")
 
     for m in candidates:
         if "flash" in m.lower():
@@ -88,12 +124,11 @@ def pick_model() -> str:
     for m in candidates:
         if "pro" in m.lower():
             return m
-
     return candidates[0]
 
 
 def gemini_generate(prompt: str, model: str) -> str:
-    api_key = os.environ.get("GEMINI_API_KEY")
+    api_key = _require_env("GEMINI_API_KEY")
     url = f"https://generativelanguage.googleapis.com/v1/{model}:generateContent?key={api_key}"
 
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
@@ -102,15 +137,22 @@ def gemini_generate(prompt: str, model: str) -> str:
     if r.status_code != 200:
         raise RuntimeError(f"Gemini error {r.status_code}: {r.text}")
 
-    return r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+    data = r.json()
+    try:
+        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+    except Exception:
+        raise RuntimeError(f"Gemini response parsing failed: {data}") from None
 
 
 # ===============================
-# CHUNKING
+# CHUNKING (ROBUST)
 # ===============================
 
-def chunk_text(text: str, max_chars=12000, overlap=600):
-    text = text.strip()
+def chunk_text(text: str, max_chars: int = 12000, overlap: int = 500) -> list[str]:
+    """
+    Split by paragraphs; if a paragraph is too long, hard-split.
+    """
+    text = (text or "").strip()
     if not text:
         return []
 
@@ -118,119 +160,182 @@ def chunk_text(text: str, max_chars=12000, overlap=600):
     chunks = []
     buf = ""
 
-    for p in paras:
-        if len(buf) + len(p) < max_chars:
-            buf += "\n\n" + p
-        else:
+    def flush():
+        nonlocal buf
+        if buf.strip():
             chunks.append(buf.strip())
+        buf = ""
+
+    for p in paras:
+        # fits in current buffer
+        if len(buf) + len(p) + 2 <= max_chars:
+            buf = f"{buf}\n\n{p}".strip()
+            continue
+
+        # flush buffer
+        flush()
+
+        # paragraph fits alone
+        if len(p) <= max_chars:
             buf = p
+            continue
 
-    if buf.strip():
-        chunks.append(buf.strip())
+        # hard split very long paragraph
+        start = 0
+        step = max_chars - overlap
+        if step <= 0:
+            step = max_chars
+        while start < len(p):
+            part = p[start:start + max_chars].strip()
+            if part:
+                chunks.append(part)
+            start += step
 
+    flush()
     return chunks
 
 
 # ===============================
-# SUMMARY
+# SUMMARY (CONDENSED COMPRESSION)
 # ===============================
 
-def summarize_long_document(raw_text: str, force_lang=None):
+def _condensed_prompt(content: str, out_lang: str) -> str:
+    lang_rule = "Respond in Chinese (简体中文)." if out_lang == "zh" else "Respond in English."
+    return f"""
+Task: Condensed compression summary.
 
-    if not raw_text.strip():
+Strict rules:
+- Output ONLY 4–6 bullet points.
+- Each bullet ≤ 15 words.
+- No title, no intro, no conclusion.
+- No action items, no recommendations.
+- No extra reasoning, no implications.
+- Do NOT infer missing information.
+- Keep only core arguments and key facts. Remove filler.
+- Be strictly objective.
+- {lang_rule}
+
+Content:
+{content}
+""".strip()
+
+
+def _chunk_prompt(chunk: str, out_lang: str, idx: int, total: int) -> str:
+    lang_rule = "Respond in Chinese (简体中文)." if out_lang == "zh" else "Respond in English."
+    return f"""
+Task: Ultra-short chunk compression.
+
+Rules:
+- Output ONLY 2–3 bullet points.
+- Each bullet ≤ 12 words.
+- No conclusions, no action items, no expansion.
+- Strictly objective and faithful.
+- {lang_rule}
+
+Chunk {idx}/{total}:
+{chunk}
+""".strip()
+
+
+def summarize_long_document(raw_text: str, force_lang: str | None = None):
+    """
+    Returns: (summary, lang, meta)
+    meta includes: chunks, model
+    """
+    raw_text = (raw_text or "").strip()
+    if not raw_text:
         return "No content provided.", "en", {"chunks": 0}
 
     detected = detect_language(raw_text)
     out_lang = force_lang if force_lang in ("zh", "en") else detected
     model = pick_model()
 
-    chunks = chunk_text(raw_text)
-
-    lang_rule = "Respond in Chinese (简体中文)." if out_lang == "zh" else "Respond in English."
+    chunks = chunk_text(raw_text, max_chars=12000, overlap=500)
 
     # Single chunk
-    if len(chunks) == 1:
-        prompt = f"""
-Condensed compression summary.
-
-Rules:
-- Output ONLY 4–6 bullet points.
-- Each bullet ≤ 15 words.
-- No action items. No conclusion. No expansion.
-- Strictly objective.
-- {lang_rule}
-
-Content:
-{chunks[0][:20000]}
-"""
+    if len(chunks) <= 1:
+        prompt = _condensed_prompt(_clip(raw_text, 20000), out_lang)
         final = gemini_generate(prompt, model)
-        return final, out_lang, {"chunks": 1, "model": model}
+        return final, out_lang, {"chunks": len(chunks), "model": model}
 
-    # Multi-chunk
+    # Multi chunk: compress each chunk, then final compress again
     partials = []
-    for ch in chunks:
-        prompt = f"""
-Ultra-short compression.
-
-Rules:
-- 2–3 bullet points.
-- ≤ 12 words each.
-- Strictly objective.
-- {lang_rule}
-
-Content:
-{ch[:15000]}
-"""
-        partials.append(gemini_generate(prompt, model))
+    for i, ch in enumerate(chunks, start=1):
+        p = _chunk_prompt(_clip(ch, 14000), out_lang, i, len(chunks))
+        partials.append(gemini_generate(p, model))
 
     merged = "\n".join(partials)
-
-    final_prompt = f"""
-Final condensed compression.
-
-Rules:
-- Output ONLY 4–6 bullet points.
-- ≤ 15 words each.
-- No action items. No expansion.
-- Strictly objective.
-- {lang_rule}
-
-Content:
-{merged}
-"""
+    final_prompt = _condensed_prompt(_clip(merged, 20000), out_lang)
     final = gemini_generate(final_prompt, model)
     return final, out_lang, {"chunks": len(chunks), "model": model}
 
 
 # ===============================
-# PDF
+# PDF (CJK SUPPORT)
 # ===============================
 
-def summary_to_pdf_bytes(title: str, text: str):
+def _register_cjk_font() -> str:
+    """
+    Register and return font name. If fails, fallback to Helvetica.
+    """
+    try:
+        # avoid duplicate registration
+        if DEFAULT_CJK_FONT_NAME not in pdfmetrics.getRegisteredFontNames():
+            if os.path.exists(DEFAULT_CJK_FONT_PATH):
+                pdfmetrics.registerFont(TTFont(DEFAULT_CJK_FONT_NAME, DEFAULT_CJK_FONT_PATH))
+                return DEFAULT_CJK_FONT_NAME
+            else:
+                # font file not found
+                return "Helvetica"
+        return DEFAULT_CJK_FONT_NAME
+    except Exception:
+        return "Helvetica"
+
+
+def summary_to_pdf_bytes(title: str, text: str) -> bytes:
+    font_name = _register_cjk_font()
+
     buffer = BytesIO()
     c = canvas.Canvas(buffer, pagesize=A4)
     width, height = A4
 
+    x = 40
     y = height - 60
-    c.setFont("Helvetica-Bold", 14)
-    c.drawString(40, y, title)
-    y -= 30
 
-    c.setFont("Helvetica", 11)
-    for line in text.splitlines():
-        if y < 50:
+    c.setFont(font_name, 14)
+    c.drawString(x, y, title)
+    y -= 26
+
+    c.setFont(font_name, 11)
+
+    # simple wrap (shorter for CJK for safety)
+    max_len = 48 if font_name != "Helvetica" else 95
+
+    lines = []
+    for raw_line in (text or "").splitlines():
+        raw_line = raw_line.rstrip()
+        if not raw_line:
+            lines.append("")
+            continue
+        while len(raw_line) > max_len:
+            lines.append(raw_line[:max_len])
+            raw_line = raw_line[max_len:]
+        lines.append(raw_line)
+
+    for line in lines:
+        if y < 60:
             c.showPage()
-            c.setFont("Helvetica", 11)
+            c.setFont(font_name, 11)
             y = height - 60
-        c.drawString(40, y, line)
-        y -= 15
+        c.drawString(x, y, line)
+        y -= 16
 
     c.save()
     return buffer.getvalue()
 
 
 # ===============================
-# HISTORY
+# HISTORY (SQLite)
 # ===============================
 
 def init_db():
@@ -245,26 +350,30 @@ def init_db():
             summary TEXT,
             send_email INTEGER,
             send_telegram INTEGER,
-            send_sms INTEGER
+            send_sms INTEGER,
+            meta TEXT
         )
     """)
     conn.commit()
     conn.close()
 
 
-def save_history(title, summary, lang, send_email, send_telegram, send_sms):
+def save_history(title, summary, lang, send_email, send_telegram, send_sms, meta=None):
     init_db()
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     cur.execute("""
-        INSERT INTO history (created_at, lang, title, summary, send_email, send_telegram, send_sms)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO history (created_at, lang, title, summary, send_email, send_telegram, send_sms, meta)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         datetime.now(MYT).strftime("%Y-%m-%d %H:%M:%S"),
-        lang, title, summary,
-        int(send_email),
-        int(send_telegram),
-        int(send_sms)
+        lang,
+        title,
+        summary,
+        int(bool(send_email)),
+        int(bool(send_telegram)),
+        int(bool(send_sms)),
+        json.dumps(meta or {}, ensure_ascii=False)
     ))
     conn.commit()
     conn.close()
@@ -274,7 +383,7 @@ def load_history(limit=50):
     init_db()
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
-    cur.execute("SELECT * FROM history ORDER BY id DESC LIMIT ?", (limit,))
+    cur.execute("SELECT id, created_at, lang, title, summary, send_email, send_telegram, send_sms, meta FROM history ORDER BY id DESC LIMIT ?", (limit,))
     rows = cur.fetchall()
     conn.close()
 
@@ -289,6 +398,7 @@ def load_history(limit=50):
             "send_email": bool(r[5]),
             "send_telegram": bool(r[6]),
             "send_sms": bool(r[7]),
+            "meta": r[8] or "{}",
         })
     return result
 
@@ -297,60 +407,110 @@ def load_history(limit=50):
 # SENDERS
 # ===============================
 
-def send_email_sendgrid(subject, body):
-    api_key = os.getenv("SENDGRID_API_KEY")
-    email_from = os.getenv("EMAIL_FROM")
-    email_to = os.getenv("EMAIL_TO")
+def send_email_sendgrid(subject: str, body: str) -> None:
+    api_key = _require_env("SENDGRID_API_KEY")
+    email_from = _require_env("EMAIL_FROM")
+    email_to = _require_env("EMAIL_TO")
 
-    recipients = [{"email": e.strip()} for e in email_to.split(",")]
+    recipients = [{"email": e.strip()} for e in email_to.split(",") if e.strip()]
+    if not recipients:
+        raise RuntimeError("EMAIL_TO has no valid recipients.")
 
     payload = {
         "personalizations": [{"to": recipients}],
         "from": {"email": email_from},
         "subject": subject,
         "content": [{"type": "text/plain", "value": body}],
+        "reply_to": {"email": email_from},
     }
 
     r = requests.post(
         "https://api.sendgrid.com/v3/mail/send",
-        headers={"Authorization": f"Bearer {api_key}"},
-        json=payload
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        json=payload,
+        timeout=30,
     )
 
     if r.status_code not in (200, 201, 202):
-        raise RuntimeError(r.text)
+        raise RuntimeError(f"SendGrid error {r.status_code}: {r.text}")
 
 
-def send_telegram(message):
-    token = os.getenv("TELEGRAM_BOT_TOKEN")
-    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+def send_telegram(message: str) -> None:
+    token = _require_env("TELEGRAM_BOT_TOKEN")
+    chat_id = _require_env("TELEGRAM_CHAT_ID")
 
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    r = requests.post(url, json={"chat_id": chat_id, "text": message})
+    r = requests.post(
+        url,
+        json={"chat_id": chat_id, "text": message, "disable_web_page_preview": True},
+        timeout=30,
+    )
 
     if r.status_code != 200:
-        raise RuntimeError(r.text)
+        raise RuntimeError(f"Telegram error {r.status_code}: {r.text}")
 
 
-def send_sms_twilio(message):
-    sid = os.getenv("TWILIO_ACCOUNT_SID")
-    token = os.getenv("TWILIO_AUTH_TOKEN")
-    from_num = os.getenv("TWILIO_FROM")
-    to_nums = os.getenv("SMS_TO")
+def _normalize_my_number(n: str) -> str:
+    n = (n or "").strip().replace(" ", "").replace("-", "")
+    if not n:
+        return ""
+    if n.startswith("+"):
+        return n
+    if n.startswith("0"):
+        return "+60" + n[1:]
+    return n
+
+
+def sms_ultra_short(summary_text: str, out_lang: str) -> str:
+    """
+    Make an even shorter SMS-friendly text (avoid multi-part SMS costs).
+    Goal: ~300 chars.
+    """
+    summary_text = (summary_text or "").strip()
+    if not summary_text:
+        return ""
+
+    # Keep bullets but hard-limit length
+    lines = [ln.strip() for ln in summary_text.splitlines() if ln.strip()]
+    # Ensure bullet format remains compact
+    compact = "\n".join(lines)
+    limit = 320
+    if len(compact) <= limit:
+        return compact
+
+    # Trim to limit without adding extra commentary
+    return compact[:limit].rstrip()
+
+
+def send_sms_twilio(message: str) -> None:
+    sid = _require_env("TWILIO_ACCOUNT_SID")
+    token = _require_env("TWILIO_AUTH_TOKEN")
+    from_num = _require_env("TWILIO_FROM")
+    to_nums = _require_env("SMS_TO")
 
     client = Client(sid, token)
+    numbers = [_normalize_my_number(n) for n in to_nums.split(",") if n.strip()]
+    if not numbers:
+        raise RuntimeError("SMS_TO has no valid numbers.")
 
-    numbers = [n.strip() for n in to_nums.split(",") if n.strip()]
     for n in numbers:
-        if n.startswith("0"):
-            n = "+60" + n[1:]
         client.messages.create(body=message, from_=from_num, to=n)
 
 
-def send_selected(subject, body, send_email, send_telegram_flag, send_sms_flag):
+def send_selected(subject: str, body: str, send_email: bool, send_telegram_flag: bool, send_sms_flag: bool, *,
+                  sms_mode: str = "auto", summary_for_sms: str | None = None, lang: str = "en") -> None:
+    """
+    sms_mode:
+      - auto: use a shortened SMS text from summary if provided, else use body
+      - full: use body as-is
+    """
     if send_email:
         send_email_sendgrid(subject, body)
     if send_telegram_flag:
         send_telegram(body)
     if send_sms_flag:
-        send_sms_twilio(body)
+        if sms_mode == "full":
+            sms_text = body
+        else:
+            sms_text = sms_ultra_short(summary_for_sms or body, lang)
+        send_sms_twilio(sms_text)

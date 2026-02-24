@@ -13,26 +13,45 @@ from send_core import (
 )
 
 MYT = timezone(timedelta(hours=8))
-VIDEO_PATH = "logo/video/robot.mp4"  # your repo path
+VIDEO_PATH = "logo/video/robot.mp4"
 HEADER_H = 56
-
 
 st.set_page_config(page_title="Daily Summary Bot", layout="centered")
 
-# Premium UI CSS (black/grey/white + premium overlay loader)
-st.markdown(f"""
+# =========================
+# UI CSS (Fix top padding + stable header spacing)
+# =========================
+st.markdown(
+    f"""
 <style>
-.block-container {{padding-top: 2rem; padding-bottom: 2rem; max-width: 920px;}}
-h1, h2, h3 {{letter-spacing: -0.02em;}}
-div[data-baseweb="input"], textarea {{border-radius: 14px !important;}}
+/* --- Streamlit container padding (works across versions) --- */
+section.main > div.block-container {{
+  padding-top: 3.2rem !important;    /* ✅ ensure top spacing */
+  padding-bottom: 2rem !important;
+  max-width: 920px;
+}}
+
+header[data-testid="stHeader"] {{
+  height: 0px !important;            /* optional: reduce top header chrome */
+}}
+
+h1, h2, h3 {{
+  letter-spacing: -0.02em;
+}}
+
+div[data-baseweb="input"], textarea {{
+  border-radius: 14px !important;
+}}
 
 /* Header */
 .header-row {{
   display:flex;
   align-items:center;
   gap:14px;
-  margin-bottom: 6px;
+  margin-top: 0.4rem;                /* ✅ extra safety margin */
+  margin-bottom: 10px;
 }}
+
 .header-logo {{
   width:{HEADER_H}px; height:{HEADER_H}px;
   border-radius: 14px;
@@ -41,6 +60,7 @@ div[data-baseweb="input"], textarea {{border-radius: 14px !important;}}
   background: rgba(255,255,255,0.04);
   box-shadow: 0 10px 35px rgba(0,0,0,.35);
 }}
+
 .header-title {{
   font-size: 34px;
   font-weight: 750;
@@ -48,12 +68,14 @@ div[data-baseweb="input"], textarea {{border-radius: 14px !important;}}
   margin: 0;
   line-height: 1.05;
 }}
+
 .header-sub {{
   margin: 3px 0 0 0;
   opacity: 0.70;
   font-size: 13px;
 }}
 
+/* Buttons */
 .stButton > button {{
   border-radius: 14px;
   border: 1px solid rgba(255,255,255,0.14);
@@ -61,7 +83,11 @@ div[data-baseweb="input"], textarea {{border-radius: 14px !important;}}
   color: #fff;
   padding: 0.6rem 1rem;
 }}
-.stButton > button:hover {{border: 1px solid rgba(255,255,255,0.28); transform: translateY(-1px);}}
+.stButton > button:hover {{
+  border: 1px solid rgba(255,255,255,0.28);
+  transform: translateY(-1px);
+}}
+
 details {{
   border-radius: 14px;
   border: 1px solid rgba(255,255,255,0.10);
@@ -116,8 +142,9 @@ small {{opacity: 0.8;}}
 }}
 @keyframes move{{to{{transform: translateX(60%);}}}}
 </style>
-""", unsafe_allow_html=True)
-
+""",
+    unsafe_allow_html=True
+)
 
 def overlay_loader_html(title="Working", subtitle="Please wait…"):
     return f"""
@@ -135,11 +162,7 @@ def overlay_loader_html(title="Working", subtitle="Please wait…"):
 </div>
 """
 
-
 def video_as_data_uri(path: str) -> str | None:
-    """
-    Embed mp4 as base64 data URI to make it reliably load on Streamlit Cloud.
-    """
     try:
         if not os.path.exists(path):
             return None
@@ -149,11 +172,13 @@ def video_as_data_uri(path: str) -> str | None:
     except Exception:
         return None
 
-
-# ----- Header with video logo
+# =========================
+# Header (with video logo)
+# =========================
 video_src = video_as_data_uri(VIDEO_PATH)
 if video_src:
-    st.markdown(f"""
+    st.markdown(
+        f"""
     <div class="header-row">
       <div class="header-logo">
         <video autoplay muted loop playsinline style="width:100%;height:100%;object-fit:cover;">
@@ -165,16 +190,16 @@ if video_src:
         <p class="header-sub">Upload → Condensed summary → Preview → PDF → Confirm → Send → History</p>
       </div>
     </div>
-    """, unsafe_allow_html=True)
+    """,
+        unsafe_allow_html=True
+    )
 else:
     st.title("Daily Summary Bot")
     st.caption("Upload → Condensed summary → Preview → PDF → Confirm → Send → History")
 
-
 # View state
 if "view" not in st.session_state:
     st.session_state["view"] = "main"  # main / history
-
 
 # =========================
 # HISTORY PAGE
@@ -199,14 +224,10 @@ def render_history():
     except Exception as e:
         st.error(f"History error: {e}")
 
-
-# =========================
-# ROUTING
-# =========================
+# Routing
 if st.session_state["view"] == "history":
     render_history()
     st.stop()
-
 
 # =========================
 # INPUT
@@ -251,7 +272,6 @@ if discard_clicked:
     st.session_state.pop("sent", None)
     st.success("Cleared. Nothing will be sent.")
 
-
 # =========================
 # GENERATE
 # =========================
@@ -281,7 +301,6 @@ if gen_clicked:
         except Exception as e:
             overlay.empty()
             st.error(f"Gemini error: {e}")
-
 
 # =========================
 # PREVIEW + PDF + SEND

@@ -1,14 +1,13 @@
-name: Daily AI Summary (Email + Telegram)
+name: Daily Gmail Digest -> SMS (9AM MYT)
 
 on:
   schedule:
-    - cron: "0 1 * * *"  # 09:00 Malaysia time
+    - cron: "0 1 * * *"  # 09:00 Malaysia time (UTC+8)
   workflow_dispatch:
 
 jobs:
   run:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -20,20 +19,21 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install requests PyPDF2 python-docx
+          pip install -r requirements.txt
 
-      - name: Run daily summary
+      - name: Run Gmail -> Gemini -> SMS digest
         env:
-          INPUT_FILE: daily.txt
-
+          # Gemini
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_MODEL: gemini-1.5-flash
 
-          SENDGRID_API_KEY: ${{ secrets.SENDGRID_API_KEY }}
-          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
-          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          # Gmail OAuth
+          GMAIL_CLIENT_ID: ${{ secrets.GMAIL_CLIENT_ID }}
+          GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}
+          GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN }}
 
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-
-        run: python send_report.py
+          # Twilio SMS
+          TWILIO_ACCOUNT_SID: ${{ secrets.TWILIO_ACCOUNT_SID }}
+          TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
+          TWILIO_FROM: ${{ secrets.TWILIO_FROM }}
+          SMS_TO: ${{ secrets.SMS_TO }}
+        run: python run_gmail_sms_digest.py

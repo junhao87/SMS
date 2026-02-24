@@ -36,4 +36,5 @@ jobs:
           TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
           TWILIO_FROM: ${{ secrets.TWILIO_FROM }}
           SMS_TO: ${{ secrets.SMS_TO }}
+
         run: python run_gmail_sms_digest.py

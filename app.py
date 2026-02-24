@@ -1,3 +1,5 @@
+import base64
+import os
 import streamlit as st
 from datetime import datetime, timezone, timedelta
 
@@ -11,33 +13,65 @@ from send_core import (
 )
 
 MYT = timezone(timedelta(hours=8))
+VIDEO_PATH = "logo/video/robot.mp4"  # your repo path
+HEADER_H = 56
+
 
 st.set_page_config(page_title="Daily Summary Bot", layout="centered")
 
 # Premium UI CSS (black/grey/white + premium overlay loader)
-st.markdown("""
+st.markdown(f"""
 <style>
-.block-container {padding-top: 2rem; padding-bottom: 2rem; max-width: 920px;}
-h1, h2, h3 {letter-spacing: -0.02em;}
-div[data-baseweb="input"], textarea {border-radius: 14px !important;}
-.stButton > button {
+.block-container {{padding-top: 2rem; padding-bottom: 2rem; max-width: 920px;}}
+h1, h2, h3 {{letter-spacing: -0.02em;}}
+div[data-baseweb="input"], textarea {{border-radius: 14px !important;}}
+
+/* Header */
+.header-row {{
+  display:flex;
+  align-items:center;
+  gap:14px;
+  margin-bottom: 6px;
+}}
+.header-logo {{
+  width:{HEADER_H}px; height:{HEADER_H}px;
+  border-radius: 14px;
+  overflow:hidden;
+  border: 1px solid rgba(255,255,255,0.12);
+  background: rgba(255,255,255,0.04);
+  box-shadow: 0 10px 35px rgba(0,0,0,.35);
+}}
+.header-title {{
+  font-size: 34px;
+  font-weight: 750;
+  letter-spacing: -0.02em;
+  margin: 0;
+  line-height: 1.05;
+}}
+.header-sub {{
+  margin: 3px 0 0 0;
+  opacity: 0.70;
+  font-size: 13px;
+}}
+
+.stButton > button {{
   border-radius: 14px;
   border: 1px solid rgba(255,255,255,0.14);
   background: linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0.02));
   color: #fff;
   padding: 0.6rem 1rem;
-}
-.stButton > button:hover {border: 1px solid rgba(255,255,255,0.28); transform: translateY(-1px);}
-details {
+}}
+.stButton > button:hover {{border: 1px solid rgba(255,255,255,0.28); transform: translateY(-1px);}}
+details {{
   border-radius: 14px;
   border: 1px solid rgba(255,255,255,0.10);
   background: rgba(255,255,255,0.03);
   padding: 0.25rem 0.75rem;
-}
-small {opacity: 0.8;}
+}}
+small {{opacity: 0.8;}}
 
 /* Premium overlay loader */
-#overlayLoader {
+#overlayLoader {{
   position: fixed;
   inset: 0;
   background: rgba(0,0,0,0.55);
@@ -47,49 +81,42 @@ small {opacity: 0.8;}
   align-items: center;
   justify-content: center;
   z-index: 999999;
-}
-.loaderCard{
+}}
+.loaderCard{{
   width: min(520px, 88vw);
   border-radius: 18px;
   padding: 22px 20px;
   border: 1px solid rgba(255,255,255,0.10);
   background: linear-gradient(180deg, rgba(255,255,255,0.10), rgba(255,255,255,0.04));
   box-shadow: 0 18px 60px rgba(0,0,0,.45);
-}
-.loaderRow{display:flex; gap:16px; align-items:center;}
-.ring{
+}}
+.loaderRow{{display:flex; gap:16px; align-items:center;}}
+.ring{{
   width:42px;height:42px;border-radius:50%;
   background: conic-gradient(from 0deg, rgba(255,255,255,.9), rgba(255,255,255,.12), rgba(255,255,255,.9));
   -webkit-mask: radial-gradient(farthest-side, transparent 62%, #000 63%);
   mask: radial-gradient(farthest-side, transparent 62%, #000 63%);
   animation: spin 0.9s linear infinite;
-}
-@keyframes spin{to{transform: rotate(360deg);}}
-.loaderTitle{font-size:14px; font-weight:600; color:#fff;}
-.loaderSub{font-size:12px; opacity:.72; margin-top:4px; color:#fff;}
-.shimmer{
+}}
+@keyframes spin{{to{{transform: rotate(360deg);}}}}
+.loaderTitle{{font-size:14px; font-weight:600; color:#fff;}}
+.loaderSub{{font-size:12px; opacity:.72; margin-top:4px; color:#fff;}}
+.shimmer{{
   margin-top:14px;
   height:10px;border-radius:999px;
   background: rgba(255,255,255,0.10);
   overflow:hidden; position:relative;
-}
-.shimmer:after{
+}}
+.shimmer:after{{
   content:"";
   position:absolute; inset:0;
   transform: translateX(-60%);
   background: linear-gradient(90deg, transparent, rgba(255,255,255,.25), transparent);
   animation: move 1.2s infinite;
-}
-@keyframes move{to{transform: translateX(60%);}}
+}}
+@keyframes move{{to{{transform: translateX(60%);}}}}
 </style>
 """, unsafe_allow_html=True)
-
-st.title("Daily Summary Bot")
-st.caption("Upload PDF/DOCX/TXT or paste text → Condensed summary → Preview → Download PDF → Confirm → Send → Save History")
-
-# View state
-if "view" not in st.session_state:
-    st.session_state["view"] = "main"  # main / history
 
 
 def overlay_loader_html(title="Working", subtitle="Please wait…"):
@@ -107,6 +134,46 @@ def overlay_loader_html(title="Working", subtitle="Please wait…"):
   </div>
 </div>
 """
+
+
+def video_as_data_uri(path: str) -> str | None:
+    """
+    Embed mp4 as base64 data URI to make it reliably load on Streamlit Cloud.
+    """
+    try:
+        if not os.path.exists(path):
+            return None
+        with open(path, "rb") as f:
+            b64 = base64.b64encode(f.read()).decode("utf-8")
+        return f"data:video/mp4;base64,{b64}"
+    except Exception:
+        return None
+
+
+# ----- Header with video logo
+video_src = video_as_data_uri(VIDEO_PATH)
+if video_src:
+    st.markdown(f"""
+    <div class="header-row">
+      <div class="header-logo">
+        <video autoplay muted loop playsinline style="width:100%;height:100%;object-fit:cover;">
+          <source src="{video_src}" type="video/mp4">
+        </video>
+      </div>
+      <div>
+        <p class="header-title">Daily Summary Bot</p>
+        <p class="header-sub">Upload → Condensed summary → Preview → PDF → Confirm → Send → History</p>
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
+else:
+    st.title("Daily Summary Bot")
+    st.caption("Upload → Condensed summary → Preview → PDF → Confirm → Send → History")
+
+
+# View state
+if "view" not in st.session_state:
+    st.session_state["view"] = "main"  # main / history
 
 
 # =========================

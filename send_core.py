@@ -45,6 +45,31 @@ def _clip(s: str, limit: int) -> str:
     return (s or "").strip()[:limit]
 
 
+def normalize_bullets(s: str) -> str:
+    """
+    Normalize various bullet styles into a single standard: "• ".
+    Also normalize "-" "*" at line start into bullets.
+    """
+    if not s:
+        return ""
+
+    # Normalize common bullet chars to •
+    s = s.replace("·", "•")
+    s = s.replace("◦", "•")
+    s = s.replace("▪", "•")
+    s = s.replace("●", "•")
+    s = s.replace("‣", "•")
+    s = s.replace("・", "•")
+
+    # Convert "- " or "* " at the start of line into bullets
+    s = re.sub(r"^\s*[\-\*]\s+", "• ", s, flags=re.M)
+
+    # Ensure "•" has a space after it
+    s = re.sub(r"^\s*•\s*", "• ", s, flags=re.M)
+
+    return s.strip()
+
+
 # ===============================
 # TEXT EXTRACTION
 # ===============================
@@ -229,7 +254,7 @@ Chunk {idx}/{total}:
 def summarize_long_document(raw_text: str, force_lang: str | None = None):
     """
     Returns: (summary, lang, meta)
-    meta includes: chunks (app won't display model)
+    meta includes: chunks only
     """
     raw_text = (raw_text or "").strip()
     if not raw_text:
@@ -243,6 +268,7 @@ def summarize_long_document(raw_text: str, force_lang: str | None = None):
 
     if len(chunks) <= 1:
         final = gemini_generate(_condensed_prompt(_clip(raw_text, 20000), out_lang), model)
+        final = normalize_bullets(final)
         return final, out_lang, {"chunks": len(chunks)}
 
     partials = []
@@ -251,11 +277,12 @@ def summarize_long_document(raw_text: str, force_lang: str | None = None):
 
     merged = "\n".join(partials)
     final = gemini_generate(_condensed_prompt(_clip(merged, 20000), out_lang), model)
+    final = normalize_bullets(final)
     return final, out_lang, {"chunks": len(chunks)}
 
 
 # ===============================
-# PDF (NO WEIRD EN WORD BREAKS + CJK OK)
+# PDF (CJK OK + CLEAN BULLETS)
 # ===============================
 
 def _register_cjk_font() -> str:
@@ -264,7 +291,6 @@ def _register_cjk_font() -> str:
     2) Fallback to built-in CID CJK font (STSong-Light)
     3) Final fallback Helvetica
     """
-    # TTF first
     try:
         if os.path.exists(DEFAULT_CJK_FONT_PATH):
             if DEFAULT_CJK_FONT_NAME not in pdfmetrics.getRegisteredFontNames():
@@ -273,7 +299,6 @@ def _register_cjk_font() -> str:
     except Exception:
         pass
 
-    # CID fallback
     try:
         fallback_name = "STSong-Light"
         if fallback_name not in pdfmetrics.getRegisteredFontNames():
@@ -284,14 +309,23 @@ def _register_cjk_font() -> str:
 
 
 def _parse_bullets(summary_text: str) -> list[str]:
+    """
+    Extract bullet lines:
+    - Accept lines starting with "•"
+    - Accept lines starting with "-" or "*"
+    - If no bullet markers, treat each non-empty line as a bullet
+    """
+    summary_text = normalize_bullets(summary_text)
+
     lines = []
     for raw in (summary_text or "").splitlines():
         s = raw.strip()
         if not s:
             continue
-        # Normalize bullets
-        s = re.sub(r"^[•\-\*\u2022]\s*", "", s)
+        # remove leading bullet marker
+        s = re.sub(r"^\s*•\s*", "", s)
         lines.append(s)
+
     return lines
 
 
@@ -494,9 +528,7 @@ def _normalize_my_number(n: str) -> str:
 
 
 def sms_ultra_short(summary_text: str) -> str:
-    summary_text = (summary_text or "").strip()
-    if not summary_text:
-        return ""
+    summary_text = normalize_bullets(summary_text)
     lines = [ln.strip() for ln in summary_text.splitlines() if ln.strip()]
     compact = "\n".join(lines)
     return compact[:320].rstrip() if len(compact) > 320 else compact

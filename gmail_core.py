@@ -53,8 +53,8 @@ def _parse_headers(headers: list[dict]) -> dict:
 
 def fetch_emails_unread_24h(max_results: int = 20) -> list[dict]:
     """
-    Fetch unread emails in last 24 hours.
-    Returns list of {id, from, subject, date, snippet}
+    Unread emails in last 24h
+    Returns: {id, from, subject, date, snippet}
     """
     user_id = "me"
     q = "is:unread newer_than:1d"
@@ -75,8 +75,8 @@ def fetch_emails_unread_24h(max_results: int = 20) -> list[dict]:
                 "metadataHeaders": ["From", "Subject", "Date"],
             },
         )
-
         headers = _parse_headers(detail.get("payload", {}).get("headers", []))
+
         results.append({
             "id": mid,
             "from": (headers.get("from", "") or "").strip(),

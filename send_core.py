@@ -25,7 +25,6 @@ from twilio.rest import Client
 MYT = timezone(timedelta(hours=8))
 DB_PATH = os.getenv("HISTORY_DB_PATH", "history.db")
 
-# Your repo font (TTF)
 DEFAULT_CJK_FONT_PATH = os.getenv("PDF_FONT_PATH", "assets/fonts/NotoSansSC-Regular.ttf")
 DEFAULT_CJK_FONT_NAME = os.getenv("PDF_FONT_NAME", "NotoSansSC")
 
@@ -33,7 +32,6 @@ DEFAULT_CJK_FONT_NAME = os.getenv("PDF_FONT_NAME", "NotoSansSC")
 # ===============================
 # HELPERS
 # ===============================
-
 def _require_env(name: str) -> str:
     v = os.getenv(name, "").strip()
     if not v:
@@ -46,14 +44,9 @@ def _clip(s: str, limit: int) -> str:
 
 
 def normalize_bullets(s: str) -> str:
-    """
-    Normalize various bullet styles into a single standard: "• ".
-    Also normalize "-" "*" at line start into bullets.
-    """
     if not s:
         return ""
 
-    # Normalize common bullet chars to •
     s = s.replace("·", "•")
     s = s.replace("◦", "•")
     s = s.replace("▪", "•")
@@ -61,10 +54,7 @@ def normalize_bullets(s: str) -> str:
     s = s.replace("‣", "•")
     s = s.replace("・", "•")
 
-    # Convert "- " or "* " at the start of line into bullets
     s = re.sub(r"^\s*[\-\*]\s+", "• ", s, flags=re.M)
-
-    # Ensure "•" has a space after it
     s = re.sub(r"^\s*•\s*", "• ", s, flags=re.M)
 
     return s.strip()
@@ -73,9 +63,7 @@ def normalize_bullets(s: str) -> str:
 # ===============================
 # TEXT EXTRACTION
 # ===============================
-
 def extract_text_from_upload(uploaded_file) -> str:
-    """Extract text from PDF / DOCX / TXT uploaded via Streamlit."""
     if uploaded_file is None:
         return ""
 
@@ -104,9 +92,7 @@ def extract_text_from_upload(uploaded_file) -> str:
 # ===============================
 # LANGUAGE DETECTION
 # ===============================
-
 def detect_language(text: str) -> str:
-    """Heuristic: if CJK ratio >= 8% => zh, else en"""
     text = text or ""
     if not text.strip():
         return "en"
@@ -118,9 +104,7 @@ def detect_language(text: str) -> str:
 # ===============================
 # GEMINI
 # ===============================
-
 def pick_model() -> str:
-    """Pick a model that supports generateContent. Prefer flash, then pro."""
     api_key = _require_env("GEMINI_API_KEY")
     url = f"https://generativelanguage.googleapis.com/v1/models?key={api_key}"
     r = requests.get(url, timeout=30)
@@ -166,9 +150,7 @@ def gemini_generate(prompt: str, model: str) -> str:
 # ===============================
 # CHUNKING
 # ===============================
-
 def chunk_text(text: str, max_chars: int = 12000, overlap: int = 500) -> list[str]:
-    """Split by paragraphs; if a paragraph is too long, hard-split."""
     text = (text or "").strip()
     if not text:
         return []
@@ -210,9 +192,8 @@ def chunk_text(text: str, max_chars: int = 12000, overlap: int = 500) -> list[st
 
 
 # ===============================
-# SUMMARY (CONDENSED COMPRESSION)
+# SUMMARY
 # ===============================
-
 def _condensed_prompt(content: str, out_lang: str) -> str:
     lang_rule = "Respond in Chinese (简体中文)." if out_lang == "zh" else "Respond in English."
     return f"""
@@ -252,10 +233,6 @@ Chunk {idx}/{total}:
 
 
 def summarize_long_document(raw_text: str, force_lang: str | None = None):
-    """
-    Returns: (summary, lang, meta)
-    meta includes: chunks only
-    """
     raw_text = (raw_text or "").strip()
     if not raw_text:
         return "No content provided.", "en", {"chunks": 0}
@@ -282,13 +259,12 @@ def summarize_long_document(raw_text: str, force_lang: str | None = None):
 
 
 # ===============================
-# PDF (CJK OK + CLEAN BULLETS)
+# PDF (Fix header clipping + bullet glyph)
 # ===============================
-
 def _register_cjk_font() -> str:
     """
-    1) Prefer your repo TTF font
-    2) Fallback to built-in CID CJK font (STSong-Light)
+    1) Prefer repo TTF font
+    2) Fallback to built-in CID CJK font
     3) Final fallback Helvetica
     """
     try:
@@ -310,10 +286,8 @@ def _register_cjk_font() -> str:
 
 def _parse_bullets(summary_text: str) -> list[str]:
     """
-    Extract bullet lines:
-    - Accept lines starting with "•"
-    - Accept lines starting with "-" or "*"
-    - If no bullet markers, treat each non-empty line as a bullet
+    Convert output into clean bullet lines (text only).
+    ListFlowable will render the actual bullets.
     """
     summary_text = normalize_bullets(summary_text)
 
@@ -322,8 +296,7 @@ def _parse_bullets(summary_text: str) -> list[str]:
         s = raw.strip()
         if not s:
             continue
-        # remove leading bullet marker
-        s = re.sub(r"^\s*•\s*", "", s)
+        s = re.sub(r"^\s*•\s*", "", s)   # remove leading bullet
         lines.append(s)
 
     return lines
@@ -338,7 +311,7 @@ def summary_to_pdf_bytes(title: str, summary_text: str) -> bytes:
         pagesize=A4,
         leftMargin=18 * mm,
         rightMargin=18 * mm,
-        topMargin=18 * mm,
+        topMargin=28 * mm,       # ✅ bigger top margin to avoid title clipping
         bottomMargin=18 * mm,
         title=title,
         author="Daily Summary Bot",
@@ -351,9 +324,10 @@ def summary_to_pdf_bytes(title: str, summary_text: str) -> bytes:
         parent=styles["Title"],
         fontName=font_name,
         fontSize=16,
-        leading=20,
+        leading=22,              # ✅ safer leading
         textColor=colors.black,
         spaceAfter=10,
+        spaceBefore=2,
     )
 
     SubtleStyle = ParagraphStyle(
@@ -369,13 +343,14 @@ def summary_to_pdf_bytes(title: str, summary_text: str) -> bytes:
     BulletStyle = ParagraphStyle(
         "BulletStyle",
         parent=styles["Normal"],
-        fontName=font_name,
+        fontName=font_name,      # ✅ body text can be CJK font
         fontSize=12,
         leading=17,
         textColor=colors.black,
     )
 
     story = []
+    story.append(Spacer(1, 6 * mm))  # ✅ extra top spacer to avoid any clipping
     story.append(Paragraph(title, TitleStyle))
     story.append(Paragraph("Condensed compression (objective, no expansion).", SubtleStyle))
     story.append(Spacer(1, 8))
@@ -385,12 +360,12 @@ def summary_to_pdf_bytes(title: str, summary_text: str) -> bytes:
         story.append(Paragraph("No summary content.", BulletStyle))
     else:
         lf = ListFlowable(
-            [ListItem(Paragraph(b, BulletStyle), leftIndent=10) for b in bullets],
+            [ListItem(Paragraph(b, BulletStyle), leftIndent=0) for b in bullets],
             bulletType="bullet",
-            bulletFontName=font_name,
-            bulletFontSize=10,
-            bulletDedent=4,
-            leftIndent=14,
+            bulletFontName="Helvetica",  # ✅ KEY: force bullet glyph to Helvetica
+            bulletFontSize=11,
+            bulletDedent=6,
+            leftIndent=16,
         )
         story.append(lf)
 
@@ -401,7 +376,6 @@ def summary_to_pdf_bytes(title: str, summary_text: str) -> bytes:
 # ===============================
 # HISTORY (SQLite)
 # ===============================
-
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
@@ -473,7 +447,6 @@ def load_history(limit=50):
 # ===============================
 # SENDERS
 # ===============================
-
 def send_email_sendgrid(subject: str, body: str) -> None:
     api_key = _require_env("SENDGRID_API_KEY")
     email_from = _require_env("EMAIL_FROM")

@@ -1,22 +1,16 @@
 # digest_core.py
 import json
-import re
 
-# 从 send_core.py 复用 Gemini & SMS 基础能力
 from send_core import pick_model, gemini_generate, detect_language, send_sms_twilio
-
-
-# ===== Mention matching: Donald / Donald Lim (case-insensitive) =====
-def _mention_tokens() -> list[str]:
-    return ["donald", "donald lim"]
 
 
 def mark_mentions(emails: list[dict]) -> list[dict]:
     """
-    Mention is ONLY based on Subject + Snippet text.
-    (Ignore CC/BCC completely)
+    Mention detection: ONLY Subject + Snippet.
+    Match: "Donald" / "Donald Lim" (case-insensitive).
+    Ignore CC/BCC.
     """
-    tokens = _mention_tokens()
+    tokens = ["donald", "donald lim"]
     out = []
     for e in emails:
         text = f"{e.get('subject','')} {e.get('snippet','')}".lower()
@@ -27,10 +21,6 @@ def mark_mentions(emails: list[dict]) -> list[dict]:
 
 
 def _digest_prompt(emails: list[dict], out_lang: str, unread_count: int, mention_count: int) -> str:
-    """
-    Output is SMS-friendly but not overly short.
-    MAIN focus: itemised task list.
-    """
     lang_rule = "Respond in Chinese (简体中文)." if out_lang == "zh" else "Respond in English."
 
     compact = []
@@ -46,31 +36,29 @@ def _digest_prompt(emails: list[dict], out_lang: str, unread_count: int, mention
     return f"""
 Task: Summarise unread Gmail emails from the last 24 hours for SMS.
 
-You must:
-- Create 3 key highlights (short, factual).
-- Create an itemised task list (follow-up actions) as the MAIN focus.
+Goals:
+- Summarise the inbox in 3 key highlights.
+- Create an itemised TASK list (follow-up actions) as the MAIN focus.
 - Mentions: ONLY if mention=true (name appears in subject/snippet). Ignore CC/BCC.
 
-STRICT output format (no extra text):
+STRICT output format (no extra text, no paragraphs):
 LINE1: "24h Unread: {unread_count} | Mentions: {mention_count}"
-SECTION A (3 lines):
-KEY: ...
-KEY: ...
-KEY: ...
-SECTION B (tasks, 3–6 lines; most important first):
-TASK: ...
-TASK: ...
-TASK: ...
-(You may output up to 6 TASK lines)
-SECTION C (mentions; keep short):
-MENTION: <from> | <subject> | <why it matters>
-(if none) MENTION: None
+
+KEY: <highlight 1 (<= 95 chars)>
+KEY: <highlight 2 (<= 95 chars)>
+KEY: <highlight 3 (<= 95 chars)>
+
+TASK: <action 1 (<= 95 chars)>
+TASK: <action 2 (<= 95 chars)>
+TASK: <action 3 (<= 95 chars)>
+(If needed, add up to 3 more TASK lines, max 6 TASK lines total)
+
+MENTION: <from> | <subject> | <why it matters (<= 75 chars)>
+(If none) MENTION: None
 
 Rules:
-- Be factual. Do NOT invent details.
-- Prefer deadlines/approval/action-needed.
-- Keep each KEY <= 95 chars.
-- Keep each TASK <= 95 chars.
+- Be factual; do NOT invent details.
+- Prefer deadlines/approvals/action-needed.
 - Keep total output under 1100 characters.
 - {lang_rule}
 
@@ -85,9 +73,6 @@ def _hard_trim(text: str, max_chars: int = 1100) -> str:
 
 
 def summarize_gmail_digest_with_gemini(emails: list[dict], force_lang: str = "en") -> tuple[str, str]:
-    """
-    Returns (digest_text, lang)
-    """
     unread_count = len(emails)
     mention_count = sum(1 for e in emails if e.get("mention"))
 
@@ -108,7 +93,6 @@ def summarize_gmail_digest_with_gemini(emails: list[dict], force_lang: str = "en
     model = pick_model()
     prompt = _digest_prompt(emails, out_lang, unread_count, mention_count)
     text = gemini_generate(prompt, model)
-
     text = _hard_trim(text, 1100)
 
     # Safety: ensure TASK exists
@@ -116,18 +100,21 @@ def summarize_gmail_digest_with_gemini(emails: list[dict], force_lang: str = "en
         text = (
             f"24h Unread: {unread_count} | Mentions: {mention_count}\n"
             "KEY: New unread emails received.\n"
-            "KEY: Review key updates and deadlines.\n"
-            "KEY: Check if any approvals/replies are needed.\n"
-            "TASK: Reply to any action-required emails.\n"
-            "TASK: Confirm meetings/deadlines mentioned.\n"
+            "KEY: Review action-required items and deadlines.\n"
+            "KEY: Check approvals/meeting updates.\n"
+            "TASK: Reply to action-required emails.\n"
+            "TASK: Confirm any meetings or deadlines mentioned.\n"
+            "TASK: Follow up on approvals or client decisions.\n"
             "MENTION: None"
         )
 
     return text.strip(), out_lang
 
 
-# ===== SMS splitting + sending =====
 def split_sms(message: str, limit: int = 320) -> list[str]:
+    """
+    Split into multiple SMS chunks. Prefer splitting by lines.
+    """
     message = (message or "").strip()
     if len(message) <= limit:
         return [message]
@@ -145,6 +132,7 @@ def split_sms(message: str, limit: int = 320) -> list[str]:
             if buf:
                 parts.append(buf)
                 buf = ""
+            # hard split long line
             while len(line) > limit:
                 parts.append(line[:limit])
                 line = line[limit:]
